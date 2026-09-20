@@ -13,6 +13,11 @@
         li span { flex: 1; }
         .done { text-decoration: line-through; color: #888; }
         #error { color: #b00020; }
+        #filters { display: flex; gap: .5rem; align-items: center; margin-bottom: .5rem; }
+        #filters button[aria-pressed="true"] { background: #222; color: #fff; }
+        #count { margin-left: auto; color: #888; font-size: .875rem; }
+        #empty { color: #888; }
+        footer { margin-top: 1.5rem; color: #888; font-size: .8rem; text-align: right; }
     </style>
 </head>
 <body>
@@ -22,11 +27,22 @@
         <input type="text" id="description" placeholder="설명 (예: 홍길동)">
         <button type="submit">Add To-Do</button>
     </form>
+    <div id="filters" role="group" aria-label="To-Do 필터">
+        <button type="button" data-filter="all" aria-pressed="true">전체</button>
+        <button type="button" data-filter="active" aria-pressed="false">미완료</button>
+        <button type="button" data-filter="completed" aria-pressed="false">완료</button>
+        <span id="count"></span>
+    </div>
     <p id="error" role="alert" hidden></p>
     <ul id="todo-list"></ul>
+    <p id="empty" hidden>표시할 To-Do가 없습니다.</p>
+    <footer>Version 2.0.0</footer>
     <script>
         const $ = (id) => document.getElementById(id);
-        const listEl = $("todo-list"), errorEl = $("error");
+        const listEl = $("todo-list"), errorEl = $("error"), countEl = $("count"), emptyEl = $("empty");
+
+        let todos = [];                 // 서버에서 받아 둔 전체 목록
+        let filter = "all";             // all | active | completed
 
         // 모든 요청을 한 곳에서 처리하고, 실패는 조용히 넘기지 않는다
         async function api(url, method = "GET", body) {
@@ -48,15 +64,22 @@
           }
         }
 
-        const load = () => run("목록 불러오기", async () => render(await api("/todos")));
+        const load = () => run("목록 불러오기", async () => { todos = await api("/todos"); render(); });
         const save = (id, todo) => run("수정", async () => { await api(`/todos/${id}`, "PUT", todo); await load(); });
 
         function button(label, onclick) {
           return Object.assign(document.createElement("button"), { textContent: label, onclick });
         }
 
-        function render(todos) {
-          listEl.replaceChildren(...todos.map((todo) => {
+        // 현재 필터에 해당하는 항목만 고른다 (서버 데이터는 그대로 둔다)
+        const visible = () => todos.filter((todo) =>
+          filter === "all" || (filter === "completed" ? todo.completed : !todo.completed));
+
+        function render() {
+          const shown = visible();
+          countEl.textContent = `${shown.length} / 전체 ${todos.length}개`;
+          emptyEl.hidden = shown.length > 0;
+          listEl.replaceChildren(...shown.map((todo) => {
             const check = Object.assign(document.createElement("input"), {
               type: "checkbox",
               checked: todo.completed,
@@ -93,6 +116,16 @@
             await load();
           });
         };
+
+        for (const btn of $("filters").querySelectorAll("button[data-filter]")) {
+          btn.onclick = () => {
+            filter = btn.dataset.filter;
+            for (const other of $("filters").querySelectorAll("button[data-filter]")) {
+              other.setAttribute("aria-pressed", String(other === btn));
+            }
+            render();
+          };
+        }
 
         load();
     </script>
