@@ -12,6 +12,8 @@
         li { display: flex; align-items: center; gap: .5rem; padding: .4rem 0; border-bottom: 1px solid #e5e5e5; }
         li span { flex: 1; }
         .done { text-decoration: line-through; color: #888; }
+        li .due { flex: none; font-size: .875rem; color: #555; }
+        li .due.overdue { color: #b00020; font-weight: 600; }
         #error { color: #b00020; }
         #filters { display: flex; gap: .5rem; align-items: center; margin-bottom: .5rem; }
         #filters button[aria-pressed="true"] { background: #222; color: #fff; }
@@ -25,6 +27,7 @@
     <form id="todo-form">
         <input type="text" id="title" placeholder="제목 (예: 20231234)" required>
         <input type="text" id="description" placeholder="설명 (예: 홍길동)">
+        <input type="date" id="due" aria-label="마감일">
         <button type="submit">Add To-Do</button>
     </form>
     <div id="filters" role="group" aria-label="To-Do 필터">
@@ -36,7 +39,7 @@
     <p id="error" role="alert" hidden></p>
     <ul id="todo-list"></ul>
     <p id="empty" hidden>표시할 To-Do가 없습니다.</p>
-    <footer>Version 2.0.0</footer>
+    <footer>Version 3.0.0</footer>
     <script>
         const $ = (id) => document.getElementById(id);
         const listEl = $("todo-list"), errorEl = $("error"), countEl = $("count"), emptyEl = $("empty");
@@ -75,6 +78,18 @@
         const visible = () => todos.filter((todo) =>
           filter === "all" || (filter === "completed" ? todo.completed : !todo.completed));
 
+        // 오늘 날짜를 "YYYY-MM-DD"(로컬 시간)로 — 마감일 문자열과 그대로 비교할 수 있다
+        const today = () => new Date().toLocaleDateString("sv-SE");
+
+        // 마감일 표시: 완료되지 않았는데 기한이 지났으면 빨갛게
+        function dueLabel(todo) {
+          const overdue = !todo.completed && todo.due_date < today();
+          return Object.assign(document.createElement("span"), {
+            textContent: overdue ? `마감 ${todo.due_date} (기한 지남)` : `마감 ${todo.due_date}`,
+            className: overdue ? "due overdue" : "due",
+          });
+        }
+
         function render() {
           const shown = visible();
           countEl.textContent = `${shown.length} / 전체 ${todos.length}개`;
@@ -90,7 +105,9 @@
               className: todo.completed ? "done" : "",
             });
             const li = document.createElement("li");
-            li.append(check, text, button("Edit", () => edit(todo)), button("Delete", () => remove(todo.id)));
+            li.append(check, text);
+            if (todo.due_date) li.append(dueLabel(todo));
+            li.append(button("Edit", () => edit(todo)), button("Delete", () => remove(todo.id)));
             return li;
           }));
         }
@@ -100,7 +117,9 @@
           if (title === null) return;
           const description = prompt("새 설명:", todo.description);
           if (description === null) return;
-          save(todo.id, { ...todo, title: title.trim(), description: description.trim() });
+          const due = prompt("새 마감일 (YYYY-MM-DD, 비우면 마감일 없음):", todo.due_date ?? "");
+          if (due === null) return;
+          save(todo.id, { ...todo, title: title.trim(), description: description.trim(), due_date: due.trim() || null });
         }
 
         function remove(id) {
@@ -111,7 +130,11 @@
         $("todo-form").onsubmit = (event) => {
           event.preventDefault();
           run("추가", async () => {
-            await api("/todos", "POST", { title: $("title").value.trim(), description: $("description").value.trim() });
+            await api("/todos", "POST", {
+              title: $("title").value.trim(),
+              description: $("description").value.trim(),
+              due_date: $("due").value || null,
+            });
             event.target.reset();
             await load();
           });
