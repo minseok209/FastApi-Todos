@@ -11,7 +11,7 @@
 ### Changed
 - 화면을 Apple(iOS) 스타일로 전면 개편: 큰 제목, 카드형 목록, 세그먼트 필터, 원형 체크박스, 다크 모드 지원
 - 수정 시 `prompt()` 창 대신 편집 시트(dialog) 사용, 제목이 비어 있으면 추가 버튼 비활성화
-- Jenkins Pipeline을 Test → Docker Build → Push → Deploy → API Test 구조로 변경
+- Jenkins Pipeline을 Test → Docker Build → Push → Deploy → Integration Test 구조로 변경
 - 의존성을 보안 패치 버전으로 올림 (`fastapi>=0.142.0`, `starlette>=1.7.0` 등), `httpx` → `httpx2`
 - Docker 이미지에서 테스트 파일 제외 (`.dockerignore`)
 

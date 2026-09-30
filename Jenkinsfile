@@ -1,4 +1,4 @@
-// 5주차: Test → Docker Build → Push → Deploy(팀 서버) → 배포 환경 API 테스트
+// 5주차: 단위 테스트(Test & Coverage) → Docker Build → Push → Deploy(팀 서버) → 통합 테스트(Integration Test)
 // Jenkins Job "Jenkins Deploy Pytest_Coverage" 의 Pipeline script 칸에 붙여 넣어 사용한다.
 // 4주차 "Jenkins Delpoy Docker direct" 와 같은 자격증명·이미지를 쓰고, 앞에 테스트 단계를, 뒤에 API 테스트 단계를 붙였다.
 pipeline {
@@ -132,7 +132,7 @@ ENDSSH
             }
         }
 
-        stage('API Test (Deployed)') {
+        stage('Integration Test') {      // 통합 테스트: 배포된 서버에 실제 HTTP 요청
             steps {
                 sh '''
                     . venv/bin/activate
@@ -146,7 +146,7 @@ ENDSSH
             post {
                 always {
                     publishHTML(target: [
-                        reportName : 'API Test Report',
+                        reportName : 'Integration Test Report',
                         reportDir  : 'api_report',
                         reportFiles: 'report.html',
                         keepAll    : true,
