@@ -1,0 +1,9 @@
+[tool.pytest]
+minversion = "9.0"
+testpaths = ["tests"]
+pythonpath = ["."]            # sys.path.insert(...) 대신: main.py가 있는 폴더를 import 경로에 추가
+addopts = ["-ra"]
+# filterwarnings = ["error"]  # (선택) 경고를 에러로 처리 = pytest -W error
+
+[tool.coverage.run]
+omit = ["*/tests/*"]          # 커버리지는 앱 코드(main.py)만 측정 — 저장소 루트에서는 --cov-config로 이 파일 지정

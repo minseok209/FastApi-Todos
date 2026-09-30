@@ -1,0 +1,5 @@
+# UI 테스트 전용 (앱 이미지에는 들어가지 않음)
+# 설치 후 브라우저도 한 번 받아야 한다: python -m playwright install chromium
+pytest>=9.0.3
+pytest-html>=4.2.0
+pytest-playwright>=0.7

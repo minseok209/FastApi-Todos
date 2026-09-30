@@ -1,3 +1,10 @@
 myenv/
 venv/
 __pycache__/
+.pytest_cache/
+.coverage
+htmlcov/
+pytest_report/
+api_report/
+ui_report/
+report/

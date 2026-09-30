@@ -8,3 +8,9 @@ myenv/
 .env
 Dockerfile
 .dockerignore
+tests/
+pyproject.toml
+.pytest_cache/
+.coverage
+htmlcov/
+pytest_report/
