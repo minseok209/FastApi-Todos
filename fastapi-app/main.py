@@ -45,9 +45,13 @@ def find_index(todos: list[TodoItem], todo_id: int) -> int:
     raise HTTPException(404, "To-Do item not found")
 
 
-@app.get("/todos")                               # 목록 조회
-def get_todos() -> list[TodoItem]:
-    return load_todos()
+@app.get("/todos")                               # 목록 조회 — ?q=검색어 로 제목 검색 (대소문자 무시)
+def get_todos(q: str = "") -> list[TodoItem]:
+    todos = load_todos()
+    keyword = q.strip().casefold()
+    if keyword:
+        todos = [t for t in todos if keyword in t.title.casefold()]
+    return todos
 
 
 @app.post("/todos", status_code=201)             # 추가 — id 는 서버가 매긴다
