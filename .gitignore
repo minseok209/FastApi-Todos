@@ -8,3 +8,5 @@ pytest_report/
 api_report/
 ui_report/
 report/
+coverage.xml
+.scannerwork/

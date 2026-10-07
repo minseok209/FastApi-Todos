@@ -1,6 +1,7 @@
-// 5주차: 단위 테스트(Test & Coverage) → Docker Build → Push → Deploy(팀 서버) → 통합 테스트(Integration Test)
-// Jenkins Job "Jenkins Deploy Pytest_Coverage" 의 Pipeline script 칸에 붙여 넣어 사용한다.
-// 4주차 "Jenkins Delpoy Docker direct" 와 같은 자격증명·이미지를 쓰고, 앞에 테스트 단계를, 뒤에 API 테스트 단계를 붙였다.
+// 6주차: Test & Coverage → SonarQube Analysis → Quality Gate → Docker Build → Push → Deploy(개인 서버) → Integration Test
+// Jenkins Job "Jenkins Deploy Sonarqube" 의 Pipeline script 칸에 붙여 넣어 사용한다.
+// 5주차 "Jenkins Deploy Pytest_Coverage" 파이프라인에 정적 분석(SonarQube)과 품질 게이트를 추가했다.
+// 품질 게이트를 통과하지 못하면 Build 이후 단계는 실행되지 않는다 (배포 중단).
 pipeline {
     agent any
 
@@ -10,19 +11,20 @@ pipeline {
         IMAGE_NAME     = 'heramt/fastapi-app'
         IMAGE_TAG      = "${env.BUILD_NUMBER}"            // 빌드마다 고유 태그 → 추적·롤백 가능
 
-        // 팀 서버
-        REMOTE_USER    = 'sogang003'
-        REMOTE_HOST    = '163.239.77.76'
+        // 개인 서버 (Jenkins·SonarQube와 같은 서버)
+        REMOTE_USER    = 'sogang010'
+        REMOTE_HOST    = '163.239.77.83'
 
         // GitHub
         REPO_URL       = 'https://github.com/minseok209/FastApi-Todos.git'
         BRANCH_NAME    = 'main'
         APP_DIR        = 'fastapi-app'                    // 저장소 루트 기준 앱 폴더
 
-        // Docker — 팀 서버 계정을 팀원이 공유하므로 본인 이름·포트 대역(8050~)으로 구분
-        CONTAINER_NAME = 'fastapi-pytest-minseok'         // 4주차 fastapi-app2-minseok(8054)와 별개
-        HOST_PORT      = '8055'
+        // Docker — docker-compose의 FastApi-app(5001)을 지우지 않도록 이름·포트를 따로 쓴다
+        CONTAINER_NAME = 'FastApi-app-sonar'
+        HOST_PORT      = '5002'
         CONTAINER_PORT = '8000'
+        // SONAR_TOKEN, SONAR_HOST_URL은 여기에 두지 않음 → SonarQube Analysis 단계의 withSonarQubeEnv가 주입
 
         // Jenkins 실패 알림 메일 — 붙여 넣을 때 본인 주소로 바꾼다 (저장소에는 올리지 않음)
         NOTIFY_EMAIL   = '[받을 이메일 주소]'
@@ -62,7 +64,9 @@ pipeline {
                       --self-contained-html \
                       --cov="$APP_DIR" \
                       --cov-config="$APP_DIR/pyproject.toml" \
+                      --cov-report=xml:"$APP_DIR/coverage.xml" \
                       --cov-report=html:htmlcov
+                    # coverage.xml(Cobertura) → SonarQube Analysis 단계에서 그대로 읽어 커버리지로 표시
                 '''
             }
             post {
@@ -83,6 +87,30 @@ pipeline {
                         alwaysLinkToLastBuild: true,
                         allowMissing: true
                     ])
+                }
+            }
+        }
+
+        stage('SonarQube Analysis') {
+            steps {
+                dir("${APP_DIR}") {
+                    script {
+                        def scannerHome = tool 'sonar'        // Jenkins 관리 → Tools 에 등록한 SonarQube Scanner 이름
+                        // 서버 URL·토큰(sonar-token)은 withSonarQubeEnv가 이 블록 안에서만 주입 (콘솔 로그에서도 마스킹)
+                        // projectKey·sources·coverage 경로는 fastapi-app/sonar-project.properties 에서 읽음
+                        withSonarQubeEnv('sonarqube') {
+                            sh "${scannerHome}/bin/sonar-scanner"
+                        }
+                    }
+                }
+            }
+        }
+
+        stage('Quality Gate') {
+            steps {
+                // SonarQube 웹훅이 결과를 알려줄 때까지 대기. 품질 기준 미달이면 파이프라인 실패 → 배포 중단
+                timeout(time: 5, unit: 'MINUTES') {
+                    waitForQualityGate abortPipeline: true
                 }
             }
         }
