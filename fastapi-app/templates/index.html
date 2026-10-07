@@ -20,6 +20,8 @@
             --red: #ff3b30;
             --red-bg: rgba(255, 59, 48, .1);
             --mark: rgba(255, 204, 0, .35);
+            --orange: #ff9500;
+            --orange-bg: rgba(255, 149, 0, .12);
         }
         @media (prefers-color-scheme: dark) {
             :root {
@@ -35,6 +37,8 @@
                 --red: #ff453a;
                 --red-bg: rgba(255, 69, 58, .15);
                 --mark: rgba(255, 214, 10, .3);
+                --orange: #ff9f0a;
+                --orange-bg: rgba(255, 159, 10, .18);
             }
         }
 
@@ -47,7 +51,7 @@
                   "Pretendard", "Segoe UI", "Malgun Gothic", system-ui, sans-serif;
             -webkit-font-smoothing: antialiased;
         }
-        button, input { font: inherit; color: inherit; }
+        button, input, select { font: inherit; color: inherit; }
         button { cursor: pointer; }
         button:focus-visible, input[type="checkbox"]:focus-visible { outline: 2px solid var(--blue); outline-offset: 2px; }
 
@@ -68,7 +72,9 @@
         #todo-form input + input, dialog input + input { border-top: .5px solid var(--separator); }
         #todo-form input::placeholder, dialog input::placeholder { color: var(--tertiary); }
         #todo-form .row { display: flex; align-items: center; gap: 12px; border-top: .5px solid var(--separator); padding-right: 12px; }
-        #todo-form .row input { flex: 1; border: 0; color: var(--secondary); }
+        #todo-form .row input { flex: 1; min-width: 0; border: 0; color: var(--secondary); }
+        select { border: 0; background: none; font-size: 15px; color: var(--secondary); padding: 6px 4px; cursor: pointer; }
+        dialog select { display: block; width: 100%; padding: 12px 12px; font-size: 17px; color: var(--label); border-top: .5px solid var(--separator); }
         .primary {
             border: 0; border-radius: 999px; padding: 7px 18px;
             background: var(--blue); color: #fff; font-size: 15px; font-weight: 600;
@@ -97,7 +103,10 @@
             box-shadow: 0 3px 8px rgba(0, 0, 0, .12), 0 3px 1px rgba(0, 0, 0, .04);
         }
 
-        #count { margin: 20px 16px 6px; color: var(--secondary); font-size: 13px; text-transform: uppercase; }
+        .list-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin: 14px 4px 6px 16px; }
+        #count { margin: 0; color: var(--secondary); font-size: 13px; text-transform: uppercase; }
+        .sort { display: flex; align-items: center; color: var(--secondary); font-size: 13px; }
+        .sort select { color: var(--blue); font-size: 13px; font-weight: 600; }
         #error { margin: 0 0 12px; padding: 12px 16px; border-radius: 12px; background: var(--red-bg); color: var(--red); font-size: 15px; }
 
         /* 목록 */
@@ -111,6 +120,11 @@
         li .desc, li .due { display: block; margin-top: 2px; font-size: 15px; color: var(--secondary); overflow-wrap: anywhere; }
         li .due { font-size: 13px; }
         li .due.overdue { color: var(--red); font-weight: 600; }
+        /* 우선순위 배지 */
+        .badge { display: inline-block; margin-right: 6px; padding: 1px 7px; border-radius: 999px; font-size: 12px; font-weight: 600; vertical-align: 2px; }
+        .badge.high { color: var(--red); background: var(--red-bg); }
+        .badge.medium { color: var(--orange); background: var(--orange-bg); }
+        .badge.low { color: var(--secondary); background: var(--fill); }
         mark { background: var(--mark); color: inherit; border-radius: 3px; padding: 0 1px; }
 
         input[type="checkbox"] {
@@ -158,6 +172,11 @@
         <input type="text" id="description" placeholder="설명 (예: 홍길동)">
         <div class="row">
             <input type="date" id="due" aria-label="마감일">
+            <select id="priority" aria-label="우선순위">
+                <option value="high">높음</option>
+                <option value="medium" selected>보통</option>
+                <option value="low">낮음</option>
+            </select>
             <button type="submit" class="primary" disabled>추가</button>
         </div>
     </form>
@@ -173,14 +192,22 @@
         <button type="button" data-filter="completed" aria-pressed="false">완료</button>
     </div>
 
-    <p id="count" aria-live="polite"></p>
+    <div class="list-head">
+        <p id="count" aria-live="polite"></p>
+        <label class="sort">정렬
+            <select id="sort" aria-label="정렬">
+                <option value="created">등록순</option>
+                <option value="priority">우선순위순</option>
+            </select>
+        </label>
+    </div>
     <p id="error" role="alert" hidden></p>
     <section class="card">
         <ul id="todo-list"></ul>
         <p id="empty" hidden>표시할 To-Do가 없습니다.</p>
     </section>
 
-    <footer>Version 4.0.0</footer>
+    <footer>Version 5.0.0</footer>
 </main>
 
 <dialog id="edit-dialog" aria-labelledby="edit-heading">
@@ -194,6 +221,11 @@
             <input type="text" id="edit-title" aria-label="제목" maxlength="100" required>
             <input type="text" id="edit-description" aria-label="설명" placeholder="설명">
             <input type="date" id="edit-due" aria-label="마감일">
+            <select id="edit-priority" aria-label="우선순위">
+                <option value="high">높음</option>
+                <option value="medium">보통</option>
+                <option value="low">낮음</option>
+            </select>
         </div>
     </form>
 </dialog>
@@ -206,6 +238,7 @@
         let todos = [];                 // 서버에서 받아 둔 전체 목록
         let filter = "all";             // all | active | completed
         let query = "";                 // 제목 검색어 (소문자)
+        let sort = "created";           // created(등록순) | priority(우선순위순) — 정렬은 서버가 한다
         let editing = null;             // 편집 시트에서 수정 중인 항목
 
         // 모든 요청을 한 곳에서 처리하고, 실패는 조용히 넘기지 않는다
@@ -228,7 +261,7 @@
           }
         }
 
-        const load = () => run("목록 불러오기", async () => { todos = await api("/todos"); render(); });
+        const load = () => run("목록 불러오기", async () => { todos = await api(`/todos?sort=${sort}`); render(); });
         const save = (id, todo) => run("수정", async () => { await api(`/todos/${id}`, "PUT", todo); await load(); });
 
         function el(tag, props = {}, ...children) {
@@ -250,6 +283,9 @@
           if (at < 0) return [title];
           return [title.slice(0, at), el("mark", { textContent: title.slice(at, at + query.length) }), title.slice(at + query.length)];
         }
+
+        const PRIORITY_LABEL = { high: "높음", medium: "보통", low: "낮음" };
+        const badge = (priority) => el("span", { className: `badge ${priority}`, textContent: PRIORITY_LABEL[priority] });
 
         // 오늘 날짜를 "YYYY-MM-DD"(로컬 시간)로 — 마감일 문자열과 그대로 비교할 수 있다
         const today = () => new Date().toLocaleDateString("sv-SE");
@@ -280,6 +316,7 @@
               onchange: () => save(todo.id, { ...todo, completed: check.checked }),
             });
             const content = el("div", { className: "content" },
+              badge(todo.priority),
               el("span", { className: todo.completed ? "title done" : "title" }, ...highlight(todo.title)));
             if (todo.description) content.append(el("span", { className: "desc", textContent: todo.description }));
             if (todo.due_date) content.append(dueLabel(todo));
@@ -294,6 +331,7 @@
           $("edit-title").value = todo.title;
           $("edit-description").value = todo.description;
           $("edit-due").value = todo.due_date ?? "";
+          $("edit-priority").value = todo.priority;
           dialog.showModal();
         }
 
@@ -305,6 +343,7 @@
             title: $("edit-title").value.trim(),
             description: $("edit-description").value.trim(),
             due_date: $("edit-due").value || null,
+            priority: $("edit-priority").value,
           });
         };
         $("edit-cancel").onclick = () => dialog.close();
@@ -325,6 +364,7 @@
               title: $("title").value.trim(),
               description: $("description").value.trim(),
               due_date: $("due").value || null,
+              priority: $("priority").value,
             });
             event.target.reset();
             submitBtn.disabled = true;
@@ -332,6 +372,7 @@
           });
         };
 
+        $("sort").onchange = () => { sort = $("sort").value; load(); };
         $("search").oninput = () => { query = $("search").value.trim().toLowerCase(); render(); };
 
         for (const btn of $("filters").querySelectorAll("button[data-filter]")) {

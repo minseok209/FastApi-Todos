@@ -106,6 +106,7 @@ def test_create_todo_defaults():
     assert body["description"] == ""
     assert body["completed"] is False
     assert body["due_date"] is None
+    assert body["priority"] == "medium"          # 우선순위 기본값 = 보통
 
 
 def test_create_todo_with_due_date():
@@ -131,6 +132,56 @@ def test_create_todo_validation_errors(payload):
     response = client.post("/todos", json=payload)
     assert response.status_code == 422
     assert load_todos() == []                    # 잘못된 요청은 저장되지 않음
+
+
+# ---------- 우선순위 (v5.0.0) ----------
+
+def test_create_todo_with_priority():
+    response = client.post("/todos", json={"title": "급한 일", "priority": "high"})
+    assert response.status_code == 201
+    assert response.json()["priority"] == "high"
+    assert load_todos()[0].priority == "high"
+
+
+def test_create_todo_invalid_priority():
+    response = client.post("/todos", json={"title": "Bad", "priority": "urgent"})
+    assert response.status_code == 422
+    assert load_todos() == []
+
+
+def test_old_data_without_priority_is_medium():
+    main.TODO_FILE.write_text('[{"id": 1, "title": "예전 항목"}]', encoding="utf-8")   # v4 이전 형식
+    assert client.get("/todos").json()[0]["priority"] == "medium"
+
+
+def test_sort_by_priority():
+    save_todos([make(1, "L", priority="low"), make(2, "M1"), make(3, "H", priority="high"), make(4, "M2")])
+    response = client.get("/todos", params={"sort": "priority"})
+    assert response.status_code == 200
+    assert [t["id"] for t in response.json()] == [3, 2, 4, 1]   # 높음 → 보통(등록순 유지) → 낮음
+
+
+def test_default_sort_keeps_created_order():
+    save_todos([make(1, "L", priority="low"), make(2, "H", priority="high")])
+    assert [t["id"] for t in client.get("/todos").json()] == [1, 2]
+
+
+def test_sort_by_priority_with_search():
+    save_todos([make(1, "과제 A", priority="low"), make(2, "장보기", priority="high"), make(3, "과제 B", priority="high")])
+    response = client.get("/todos", params={"q": "과제", "sort": "priority"})
+    assert [t["id"] for t in response.json()] == [3, 1]
+
+
+def test_invalid_sort_returns_422():
+    response = client.get("/todos", params={"sort": "random"})
+    assert response.status_code == 422
+
+
+def test_update_priority():
+    save_todos([make(1, "Test")])
+    response = client.put("/todos/1", json={"title": "Test", "priority": "low"})
+    assert response.json()["priority"] == "low"
+    assert load_todos()[0].priority == "low"
 
 
 # ---------- 수정 (PUT) ----------
@@ -183,5 +234,6 @@ def test_index_page():
     response = client.get("/")
     assert response.status_code == 200
     assert response.headers["content-type"].startswith("text/html")
-    assert "Version 4.0.0" in response.text
+    assert "Version 5.0.0" in response.text
     assert 'id="search"' in response.text        # 검색창이 화면에 있는지
+    assert 'id="sort"' in response.text          # 정렬 선택이 화면에 있는지

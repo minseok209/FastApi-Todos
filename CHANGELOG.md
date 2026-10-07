@@ -2,6 +2,22 @@
 
 최신 버전을 위에 누적해서 기록한다.
 
+## Version 5.0.0
+
+### Added
+- Todo 우선순위(높음 / 보통 / 낮음) 지정 — 추가 폼·편집 시트에서 선택, 목록에 색상 배지로 표시
+- 우선순위순 정렬 (화면 정렬 선택 + API `GET /todos?sort=priority`, 같은 우선순위는 등록 순서 유지)
+- 우선순위가 없는 기존 데이터는 자동으로 `보통`으로 읽음 (하위 호환)
+
+### Changed
+- Jenkins Pipeline에 SonarQube 정적 분석(SonarQube Analysis)과 품질 게이트(Quality Gate) 단계 추가 — 기준 미달 시 배포 중단
+- `docker-compose.yml`에 SonarQube 서버(9000) 추가, `fastapi-app/sonar-project.properties` 추가
+- 배포 대상을 개인 서버 `163.239.77.83:5002`로 변경
+
+### Testing
+- 우선순위·정렬 단위 테스트 8개 추가 (총 33개, `main.py` 커버리지 98%)
+- 배포 환경 API 테스트(우선순위 정렬, 잘못된 우선순위 422)와 Playwright UI 테스트(배지, 정렬, 편집) 추가
+
 ## Version 4.0.0
 
 ### Added

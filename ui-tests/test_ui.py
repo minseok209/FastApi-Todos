@@ -1,6 +1,6 @@
 """Playwright UI 테스트 — 실제 브라우저(Chromium)로 To-Do 화면을 조작한다.
 
-    pytest ui-tests --html=ui_report/report.html --self-contained-html            # 팀 서버(기본값)
+    pytest ui-tests --html=ui_report/report.html --self-contained-html            # 개인 서버(기본값)
     pytest ui-tests --base-url http://127.0.0.1:8000 --headed --slowmo 300         # 로컬, 화면 보면서
 
 실제 서버 데이터를 쓰므로 이번 실행에서 만든 항목에만 고유 접두어를 붙이고, 테스트마다 지운다.
@@ -23,10 +23,11 @@ def todo_page(page: Page):
         page.request.delete(f"/todos/{todo['id']}")
 
 
-def add(page: Page, title, description="", due=""):
+def add(page: Page, title, description="", due="", priority="medium"):
     page.fill("#title", title)
     page.fill("#description", description)
     page.fill("#due", due)
+    page.select_option("#priority", priority)
     page.get_by_role("button", name="추가").click()
     row = item(page, title)
     expect(row).to_be_visible()
@@ -42,7 +43,9 @@ def item(page: Page, title):
 def test_initial_screen(todo_page: Page, shot):
     expect(todo_page).to_have_title("To-Do List")
     expect(todo_page.get_by_role("heading", level=1)).to_have_text("To-Do")
-    expect(todo_page.locator("footer")).to_have_text("Version 4.0.0")
+    expect(todo_page.locator("footer")).to_have_text("Version 5.0.0")
+    expect(todo_page.locator("#priority")).to_have_value("medium")           # 우선순위 기본값 = 보통
+    expect(todo_page.locator("#sort")).to_have_value("created")
     expect(todo_page.get_by_placeholder("제목 검색")).to_be_visible()
     expect(todo_page.get_by_role("button", name="추가")).to_be_disabled()   # 제목이 비어 있으면 비활성
     expect(todo_page.locator("#filters button[aria-pressed=true]")).to_have_text("전체")
@@ -124,6 +127,38 @@ def test_search_combined_with_filter(todo_page: Page, shot):
     expect(todo_page.locator("#todo-list li")).to_have_count(1)
     expect(item(todo_page, f"{PREFIX} 필터B")).to_be_visible()
     shot("검색+완료필터")
+
+
+# ---------- 우선순위 (v5.0.0) ----------
+
+def test_add_with_priority_shows_badge(todo_page: Page, shot):
+    row = add(todo_page, f"{PREFIX} 급한 일", priority="high")
+    expect(row.locator(".badge")).to_have_text("높음")
+    expect(row.locator(".badge")).to_have_class(re.compile("high"))
+    expect(todo_page.locator("#priority")).to_have_value("medium")           # 추가 후 기본값으로 돌아감
+    shot("우선순위배지")
+
+
+def test_sort_by_priority(todo_page: Page, shot):
+    add(todo_page, f"{PREFIX} 정렬 낮음", priority="low")
+    add(todo_page, f"{PREFIX} 정렬 보통")
+    add(todo_page, f"{PREFIX} 정렬 높음", priority="high")
+    todo_page.fill("#search", f"{PREFIX} 정렬")
+    titles = todo_page.locator("#todo-list li .title")
+    expect(titles).to_have_text([f"{PREFIX} 정렬 낮음", f"{PREFIX} 정렬 보통", f"{PREFIX} 정렬 높음"])   # 등록순
+
+    todo_page.select_option("#sort", "priority")
+    expect(titles).to_have_text([f"{PREFIX} 정렬 높음", f"{PREFIX} 정렬 보통", f"{PREFIX} 정렬 낮음"])
+    shot("우선순위정렬")
+
+
+def test_edit_priority(todo_page: Page):
+    row = add(todo_page, f"{PREFIX} 우선순위 변경")
+    row.get_by_role("button", name="편집").click()
+    expect(todo_page.locator("#edit-priority")).to_have_value("medium")
+    todo_page.select_option("#edit-priority", "low")
+    todo_page.locator("#edit-dialog").get_by_role("button", name="저장").click()
+    expect(item(todo_page, f"{PREFIX} 우선순위 변경").locator(".badge")).to_have_text("낮음")
 
 
 # ---------- 완료 / 필터 ----------

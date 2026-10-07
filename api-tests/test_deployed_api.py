@@ -1,6 +1,6 @@
-"""배포된 서버(팀 서버 Docker 컨테이너)에 실제 HTTP 요청을 보내는 통합 테스트.
+"""배포된 서버(개인 서버 Docker 컨테이너)에 실제 HTTP 요청을 보내는 통합 테스트.
 
-    BASE_URL=http://163.239.77.76:8055 pytest api-tests --html=api_report/report.html --self-contained-html
+    BASE_URL=http://163.239.77.83:5002 pytest api-tests --html=api_report/report.html --self-contained-html
 
 단위 테스트(fastapi-app/tests)와 달리 실제 서버의 데이터를 사용하므로,
 테스트가 만든 항목에만 고유한 접두어를 붙이고 끝나면 모두 지운다.
@@ -12,7 +12,7 @@ import uuid
 import httpx2
 import pytest
 
-BASE_URL = os.environ.get("BASE_URL", "http://163.239.77.76:8055").rstrip("/")
+BASE_URL = os.environ.get("BASE_URL", "http://163.239.77.83:5002").rstrip("/")
 PREFIX = f"api-test-{uuid.uuid4().hex[:8]}"      # 이번 실행에서 만든 항목 표시
 UNKNOWN_ID = 999_999_999                          # 존재하지 않는 id
 
@@ -106,7 +106,22 @@ def test_update_unknown_id_returns_404(api):
     assert response.status_code == 404
 
 
-def test_index_page_is_version_4(api):
+def test_priority_and_sort(api):
+    low = api.post("/todos", json={"title": f"{PREFIX} 정렬 낮음", "priority": "low"}).json()
+    high = api.post("/todos", json={"title": f"{PREFIX} 정렬 높음", "priority": "high"}).json()
+    assert high["priority"] == "high"
+
+    response = api.get("/todos", params={"q": f"{PREFIX} 정렬", "sort": "priority"})
+    assert response.status_code == 200
+    assert ids(response) == [high["id"], low["id"]]          # 높음이 먼저
+
+
+def test_invalid_priority_returns_422(api):
+    response = api.post("/todos", json={"title": f"{PREFIX} 잘못된 우선순위", "priority": "urgent"})
+    assert response.status_code == 422
+
+
+def test_index_page_is_version_5(api):
     response = api.get("/")
     assert response.status_code == 200
-    assert "Version 4.0.0" in response.text
+    assert "Version 5.0.0" in response.text

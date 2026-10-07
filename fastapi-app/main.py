@@ -1,6 +1,7 @@
 import json
 from datetime import date
 from pathlib import Path
+from typing import Literal
 
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import FileResponse
@@ -15,12 +16,16 @@ if not TODO_FILE.exists():                       # 없으면 빈 목록으로 �
 
 app = FastAPI(title="To-Do List API")
 
+Priority = Literal["high", "medium", "low"]      # 우선순위: 높음 / 보통 / 낮음
+PRIORITY_RANK = {"high": 0, "medium": 1, "low": 2}  # 우선순위순 정렬 기준 (작을수록 위)
+
 
 class TodoIn(BaseModel):                         # 클라이언트가 보내는 데이터 (id 없음)
     title: str = Field(min_length=1, max_length=100)
     description: str = ""
     completed: bool = False
     due_date: date | None = None                 # 마감일 (없으면 null) — 기존 데이터도 그대로 읽힌다
+    priority: Priority = "medium"                # 우선순위 (없으면 보통) — 기존 데이터도 그대로 읽힌다
 
 
 class TodoItem(TodoIn):                          # 서버가 돌려주는 데이터 (id 있음)
@@ -46,11 +51,13 @@ def find_index(todos: list[TodoItem], todo_id: int) -> int:
 
 
 @app.get("/todos")                               # 목록 조회 — ?q=검색어 로 제목 검색 (대소문자 무시)
-def get_todos(q: str = "") -> list[TodoItem]:
+def get_todos(q: str = "", sort: Literal["created", "priority"] = "created") -> list[TodoItem]:
     todos = load_todos()
     keyword = q.strip().casefold()
     if keyword:
         todos = [t for t in todos if keyword in t.title.casefold()]
+    if sort == "priority":                       # ?sort=priority — 높음 → 보통 → 낮음, 같으면 등록 순서 유지
+        todos.sort(key=lambda t: PRIORITY_RANK[t.priority])
     return todos
 
 
