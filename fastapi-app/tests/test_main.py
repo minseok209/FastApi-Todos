@@ -8,12 +8,11 @@ client = TestClient(app)
 
 
 @pytest.fixture(autouse=True)
-def setup_and_teardown(tmp_path, monkeypatch):
+def use_temp_todo_file(tmp_path, monkeypatch):
     # 실제 todo.json 대신 테스트마다 새 임시 파일 사용 (본인 데이터 보호 + 테스트 간 격리)
+    # 정리할 것이 없으므로 yield 없이 끝낸다 — tmp_path 와 monkeypatch 가 자동으로 원상 복구 (SonarQube python:S9100)
     monkeypatch.setattr(main, "TODO_FILE", tmp_path / "todo.json")
     save_todos([])  # 테스트 전 초기화
-    yield
-    # 테스트 후 정리: tmp_path 와 monkeypatch 가 자동으로 원상 복구
 
 
 def make(todo_id, title, completed=False, **extra):
@@ -182,6 +181,42 @@ def test_update_priority():
     response = client.put("/todos/1", json={"title": "Test", "priority": "low"})
     assert response.json()["priority"] == "low"
     assert load_todos()[0].priority == "low"
+
+
+# ---------- 보안 (v5.0.0 · OWASP Top 10 점검 반영) ----------
+
+def test_description_too_long_is_rejected():
+    response = client.post("/todos", json={"title": "Long", "description": "x" * 501})   # A04
+    assert response.status_code == 422
+    assert load_todos() == []
+
+
+def test_security_headers_on_api():
+    response = client.get("/todos")                                                     # A05
+    assert response.headers["X-Content-Type-Options"] == "nosniff"
+    assert response.headers["X-Frame-Options"] == "DENY"
+    assert response.headers["Referrer-Policy"] == "no-referrer"
+
+
+def test_index_has_content_security_policy():
+    csp = client.get("/").headers["Content-Security-Policy"]
+    assert "default-src 'self'" in csp
+    assert "frame-ancestors 'none'" in csp
+
+
+def test_changes_are_logged(caplog):
+    with caplog.at_level("INFO", logger="uvicorn.error"):                               # A09
+        todo_id = client.post("/todos", json={"title": "Log"}).json()["id"]
+        client.put(f"/todos/{todo_id}", json={"title": "Log2"})
+        client.delete(f"/todos/{todo_id}")
+    assert [r.getMessage() for r in caplog.records] == [
+        f"todo created: id={todo_id}", f"todo updated: id={todo_id}", f"todo deleted: id={todo_id}"]
+
+
+def test_not_found_is_documented_in_openapi():
+    paths = client.get("/openapi.json").json()["paths"]["/todos/{todo_id}"]
+    assert "404" in paths["put"]["responses"]
+    assert "404" in paths["delete"]["responses"]
 
 
 # ---------- 수정 (PUT) ----------

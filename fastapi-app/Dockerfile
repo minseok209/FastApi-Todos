@@ -7,9 +7,8 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PIP_NO_CACHE_DIR=1 \
     PIP_DISABLE_PIP_VERSION_CHECK=1
 
-# root가 아닌 실행 전용 사용자 생성
-RUN useradd --create-home --uid 10001 appuser \
- && mkdir /app && chown appuser:appuser /app
+# root가 아닌 실행 전용 사용자 생성 (/app 폴더와 코드는 root 소유 → 앱이 자기 코드를 바꿀 수 없음)
+RUN useradd --create-home --uid 10001 appuser
 
 # 작업 디렉토리 설정
 WORKDIR /app
@@ -18,8 +17,12 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install -r requirements.txt
 
-# 소스 복사 (앱이 todo.json을 수정할 수 있도록 소유자를 appuser로 지정)
-COPY --chown=appuser:appuser . .
+# 소스 복사 — 필요한 파일만 이름으로 지정한다 (SonarQube docker:S6470)
+# `COPY . .` 처럼 폴더 전체를 복사하면 .env·키 파일 등이 실수로 이미지에 들어갈 수 있다
+COPY main.py ./
+COPY templates/index.html ./templates/
+# 데이터 파일만 appuser 소유로 → 앱은 todo.json 만 수정할 수 있다
+COPY --chown=appuser:appuser todo.json ./
 
 # 이후 명령은 appuser 권한으로 실행
 USER appuser

@@ -14,8 +14,19 @@
 - `docker-compose.yml`에 SonarQube 서버(9000) 추가, `fastapi-app/sonar-project.properties` 추가
 - 배포 대상을 개인 서버 `163.239.77.83:5002`로 변경
 
+### Fixed (SonarQube 1차 분석 결과 반영)
+- [Security/High] `docker:S6470` Dockerfile의 `COPY . .`(빌드 컨텍스트 전체 복사)를 필요한 파일만 이름으로 복사하도록 변경, 코드는 root 소유·`todo.json`만 appuser 소유
+- [Maintainability/High] `python:S8415` 404 `HTTPException`을 수정·삭제 엔드포인트의 `responses`에 문서화 (OpenAPI에 404 표시)
+- [Maintainability/Medium] `python:S9100` 정리 작업이 없는 pytest fixture의 불필요한 `yield` 제거
+
+### Security (Claude Code OWASP Top 10 점검 반영)
+- A04: 설명(description) 최대 500자 제한
+- A05: 보안 헤더 추가 (`X-Content-Type-Options`, `X-Frame-Options`, `Referrer-Policy`, 화면에 `Content-Security-Policy`)
+- A06: `pip-audit`로 의존성 취약점 점검 — 알려진 취약점 없음
+- A09: 할 일 추가·수정·삭제를 서버 로그에 기록
+
 ### Testing
-- 우선순위·정렬 단위 테스트 8개 추가 (총 33개, `main.py` 커버리지 98%)
+- 우선순위·정렬 단위 테스트 8개 + 보안 테스트 5개 추가 (총 38개, `main.py` 커버리지 99%)
 - 배포 환경 API 테스트(우선순위 정렬, 잘못된 우선순위 422)와 Playwright UI 테스트(배지, 정렬, 편집) 추가
 
 ## Version 4.0.0
