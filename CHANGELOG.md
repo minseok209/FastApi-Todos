@@ -24,6 +24,7 @@
 - A05: 보안 헤더 추가 (`X-Content-Type-Options`, `X-Frame-Options`, `Referrer-Policy`, 화면에 `Content-Security-Policy`)
 - A06: `pip-audit`로 의존성 취약점 점검 — 알려진 취약점 없음
 - A09: 할 일 추가·수정·삭제를 서버 로그에 기록
+- 점검 보고서: [`docs/OWASP_Top10_Report.md`](docs/OWASP_Top10_Report.md)
 
 ### Testing
 - 우선순위·정렬 단위 테스트 8개 + 보안 테스트 5개 추가 (총 38개, `main.py` 커버리지 99%)
