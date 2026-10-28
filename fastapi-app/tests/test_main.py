@@ -272,3 +272,78 @@ def test_index_page():
     assert "Version 5.0.0" in response.text
     assert 'id="search"' in response.text        # 검색창이 화면에 있는지
     assert 'id="sort"' in response.text          # 정렬 선택이 화면에 있는지
+
+
+# ---------- 현황 요약 / 모니터링 (v6.0.0) ----------
+
+def test_stats_empty():
+    response = client.get("/todos/stats")
+    assert response.status_code == 200
+    assert response.json() == {
+        "total": 0, "completed": 0, "active": 0, "overdue": 0, "completion_rate": 0.0,
+        "active_by_priority": {"high": 0, "medium": 0, "low": 0},
+    }
+
+
+def test_stats_counts():
+    save_todos([
+        make(1, "done", completed=True),
+        make(2, "late", due_date="2000-01-01", priority="high"),
+        make(3, "late but done", completed=True, due_date="2000-01-01"),
+        make(4, "future", due_date="2999-12-31", priority="low"),
+        make(5, "no due"),
+    ])
+    stats = client.get("/todos/stats").json()
+    assert stats["total"] == 5
+    assert stats["completed"] == 2
+    assert stats["active"] == 3
+    assert stats["overdue"] == 1                 # 완료된 항목은 기한이 지나도 세지 않는다
+    assert stats["completion_rate"] == 40.0
+    assert stats["active_by_priority"] == {"high": 1, "medium": 1, "low": 1}
+
+
+def test_stats_route_is_not_treated_as_todo_id():
+    save_todos([make(1, "A")])
+    assert client.get("/todos/stats").json()["total"] == 1
+
+
+def test_metrics_endpoint():
+    client.get("/todos")
+    response = client.get("/metrics")
+    assert response.status_code == 200
+    assert "http_requests_total" in response.text
+    assert "http_request_duration_seconds_bucket" in response.text
+
+
+def test_metrics_hidden_from_openapi():
+    assert "/metrics" not in client.get("/openapi.json").json()["paths"]
+
+
+def metric_value(text, line_prefix):
+    for line in text.splitlines():
+        if line.startswith(line_prefix + " "):
+            return float(line.rsplit(" ", 1)[1])
+    raise AssertionError(f"{line_prefix} not found")
+
+
+def test_todo_items_metric_follows_saved_todos():
+    save_todos([make(1, "done", completed=True), make(2, "late", due_date="2000-01-01"), make(3, "todo")])
+    text = client.get("/metrics").text
+    assert metric_value(text, 'todo_items{status="completed"}') == 1
+    assert metric_value(text, 'todo_items{status="active"}') == 2
+    assert metric_value(text, 'todo_items{status="overdue"}') == 1
+    assert metric_value(text, "todo_completion_rate_percent") == 33.3
+
+
+def test_todo_changes_metric_counts_operations():
+    def changes():
+        text = client.get("/metrics").text
+        return {op: metric_value(text, f'todo_changes_total{{operation="{op}"}}') for op in ("create", "update", "delete")}
+
+    before = changes()
+    client.post("/todos", json={"title": "A"})
+    client.put("/todos/1", json={"title": "A", "completed": True})
+    client.delete("/todos/1")
+    client.delete("/todos/1")                    # 404 는 변경이 아니므로 세지 않는다
+    after = changes()
+    assert {op: after[op] - before[op] for op in after} == {"create": 1, "update": 1, "delete": 1}

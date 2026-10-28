@@ -121,7 +121,26 @@ def test_invalid_priority_returns_422(api):
     assert response.status_code == 422
 
 
-def test_index_page_is_version_5(api):
+def test_index_page_is_version_6(api):
     response = api.get("/")
     assert response.status_code == 200
-    assert "Version 5.0.0" in response.text
+    assert "Version 6.0.0" in response.text
+
+
+def test_stats_follow_changes(api):                          # v6.0.0 현황 요약
+    before = api.get("/todos/stats").json()
+    created = api.post("/todos", json={"title": f"{PREFIX} 현황", "due_date": "2000-01-01"}).json()
+    after = api.get("/todos/stats").json()
+    assert after["total"] == before["total"] + 1
+    assert after["overdue"] == before["overdue"] + 1
+    api.put(f"/todos/{created['id']}", json={"title": f"{PREFIX} 현황", "due_date": "2000-01-01", "completed": True})
+    done = api.get("/todos/stats").json()
+    assert done["completed"] == before["completed"] + 1
+    assert done["overdue"] == before["overdue"]
+
+
+def test_metrics_endpoint(api):                              # 7주차 Prometheus 수집 대상
+    response = api.get("/metrics")
+    assert response.status_code == 200
+    assert "http_requests_total" in response.text
+    assert "todo_items" in response.text

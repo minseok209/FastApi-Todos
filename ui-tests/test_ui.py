@@ -43,7 +43,7 @@ def item(page: Page, title):
 def test_initial_screen(todo_page: Page, shot):
     expect(todo_page).to_have_title("To-Do List")
     expect(todo_page.get_by_role("heading", level=1)).to_have_text("To-Do")
-    expect(todo_page.locator("footer")).to_have_text("Version 5.0.0")
+    expect(todo_page.locator("footer")).to_have_text("Version 6.0.0")
     expect(todo_page.locator("#priority")).to_have_value("medium")           # 우선순위 기본값 = 보통
     expect(todo_page.locator("#sort")).to_have_value("created")
     expect(todo_page.get_by_placeholder("제목 검색")).to_be_visible()

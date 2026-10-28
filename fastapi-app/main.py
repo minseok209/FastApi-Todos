@@ -6,6 +6,10 @@ from typing import Literal
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse
+from prometheus_client import REGISTRY, Counter
+from prometheus_client.core import GaugeMetricFamily
+from prometheus_client.registry import Collector
+from prometheus_fastapi_instrumentator import Instrumentator
 from pydantic import BaseModel, Field
 
 BASE_DIR = Path(__file__).resolve().parent       # main.py 가 있는 폴더
@@ -17,6 +21,14 @@ if not TODO_FILE.exists():                       # 없으면 빈 목록으로 �
 
 app = FastAPI(title="To-Do List API")
 logger = logging.getLogger("uvicorn.error")      # 변경 이력을 uvicorn 로그(docker logs)에 남긴다 (OWASP A09)
+
+# Prometheus 메트릭 엔드포인트(/metrics) — 요청 수·응답 시간 등을 자동으로 수집 (7주차)
+Instrumentator().instrument(app).expose(app, endpoint="/metrics", include_in_schema=False)
+
+# 할 일 추가·수정·삭제 횟수 — 사이트에서 한 작업이 Grafana 그래프에 그대로 보이게 한다
+TODO_CHANGES = Counter("todo_changes_total", "To-Do changes by operation", ["operation"])
+for _operation in ("create", "update", "delete"):
+    TODO_CHANGES.labels(_operation)              # 0 으로 미리 만들어 두어야 첫 변경 전에도 그래프에 선이 나온다
 
 NOT_FOUND_DETAIL = "To-Do item not found"
 NOT_FOUND_RESPONSE = {404: {"description": NOT_FOUND_DETAIL}}   # OpenAPI 문서에 404 응답 명시 (SonarQube python:S8415)
@@ -49,6 +61,15 @@ class TodoItem(TodoIn):                          # 서버가 돌려주는 데이
     id: int
 
 
+class TodoStats(BaseModel):                      # 할 일 현황 요약 (v6.0.0)
+    total: int
+    completed: int
+    active: int                                  # 미완료
+    overdue: int                                 # 미완료인데 마감일이 지난 것
+    completion_rate: float                       # 완료율 (%) — 할 일이 없으면 0
+    active_by_priority: dict[str, int]           # 남은 할 일의 우선순위별 개수
+
+
 def load_todos() -> list[TodoItem]:
     raw = TODO_FILE.read_text(encoding="utf-8") if TODO_FILE.exists() else "[]"
     return [TodoItem(**t) for t in json.loads(raw)]
@@ -66,6 +87,35 @@ def find_index(todos: list[TodoItem], todo_id: int) -> int:
         if todo.id == todo_id:
             return i
     return -1
+
+
+def todo_stats(todos: list[TodoItem]) -> TodoStats:
+    today = date.today()
+    active = [t for t in todos if not t.completed]
+    completed = len(todos) - len(active)
+    return TodoStats(
+        total=len(todos),
+        completed=completed,
+        active=len(active),
+        overdue=sum(1 for t in active if t.due_date is not None and t.due_date < today),
+        completion_rate=round(100 * completed / len(todos), 1) if todos else 0.0,
+        active_by_priority={p: sum(1 for t in active if t.priority == p) for p in PRIORITY_RANK},
+    )
+
+
+class TodoCollector(Collector):
+    """Prometheus 가 /metrics 를 읽을 때마다 todo.json 에서 현재 할 일 현황을 계산해 내보낸다."""
+
+    def collect(self):
+        stats = todo_stats(load_todos())
+        items = GaugeMetricFamily("todo_items", "Current number of To-Do items by status", labels=["status"])
+        for status in ("completed", "active", "overdue"):
+            items.add_metric([status], getattr(stats, status))
+        yield items
+        yield GaugeMetricFamily("todo_completion_rate_percent", "Completed To-Do items (%)", value=stats.completion_rate)
+
+
+REGISTRY.register(TodoCollector())
 
 
 @app.middleware("http")
@@ -86,12 +136,18 @@ def get_todos(q: str = "", sort: Literal["created", "priority"] = "created") -> 
     return todos
 
 
+@app.get("/todos/stats")                         # 현황 요약 — 전체·완료·미완료·기한 지남·완료율 (v6.0.0)
+def get_todo_stats() -> TodoStats:
+    return todo_stats(load_todos())
+
+
 @app.post("/todos", status_code=201)             # 추가 — id 는 서버가 매긴다
 def create_todo(payload: TodoIn) -> TodoItem:
     todos = load_todos()
     new_id = max((t.id for t in todos), default=0) + 1
     todo = TodoItem(id=new_id, **payload.model_dump())
     save_todos(todos + [todo])
+    TODO_CHANGES.labels("create").inc()
     logger.info("todo created: id=%s", todo.id)
     return todo
 
@@ -105,6 +161,7 @@ def update_todo(todo_id: int, payload: TodoIn) -> TodoItem:
     todo = TodoItem(id=todo_id, **payload.model_dump())
     todos[index] = todo
     save_todos(todos)
+    TODO_CHANGES.labels("update").inc()
     logger.info("todo updated: id=%s", todo_id)
     return todo
 
@@ -117,6 +174,7 @@ def delete_todo(todo_id: int) -> None:
         raise HTTPException(404, NOT_FOUND_DETAIL)
     del todos[index]
     save_todos(todos)
+    TODO_CHANGES.labels("delete").inc()
     logger.info("todo deleted: id=%s", todo_id)
 
 
