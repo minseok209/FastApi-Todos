@@ -2,6 +2,24 @@
 
 최신 버전을 위에 누적해서 기록한다.
 
+## Version 6.0.0
+
+### Added
+- 할 일 현황 요약 카드 — 완료율(%)과 진행 막대, 전체·완료·미완료·기한 지남·남은 높음 우선순위 개수 (검색·필터와 상관없이 전체 기준)
+- 현황 API `GET /todos/stats` (`total`, `completed`, `active`, `overdue`, `completion_rate`, `active_by_priority`)
+- Prometheus 메트릭 엔드포인트 `/metrics` (`prometheus-fastapi-instrumentator`) — 요청 수·응답 시간 자동 수집, Swagger 목록에서는 숨김
+- 커스텀 메트릭: `todo_items{status=completed|active|overdue}`, `todo_completion_rate_percent`, `todo_changes_total{operation=create|update|delete}`
+
+### Changed (모니터링 환경)
+- `docker-compose.yml`에 Prometheus(서버 내부 `127.0.0.1:7070`), Grafana(3000), node-exporter, cAdvisor 추가 — 모두 이미지 버전 고정, `no-new-privileges`, 외부 포트 최소화
+- `prometheus/prometheus.yml` — `fastapi`, `node`, `cadvisor` 3개 타깃을 15초마다 수집
+- Grafana 데이터 소스(Prometheus)와 `FastApi-Todos 모니터링` 대시보드(시스템·애플리케이션·To-Do 현황 16개 패널) 자동 등록
+- `scripts/traffic.py` — 조회·추가·오류·동시 접속 부하를 단계별로 보내 그래프 변화를 관찰하는 스크립트
+
+### Testing
+- 현황 요약·`/metrics`·커스텀 메트릭 단위 테스트 7개 추가 (총 45개, `main.py` 커버리지 99%)
+- 배포 환경 API 테스트에 현황 요약·`/metrics` 확인 추가
+
 ## Version 5.0.0
 
 ### Added

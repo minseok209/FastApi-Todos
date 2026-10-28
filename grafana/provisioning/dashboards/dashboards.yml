@@ -1,0 +1,10 @@
+# grafana/dashboards 폴더의 대시보드 JSON 을 자동으로 불러온다
+apiVersion: 1
+
+providers:
+  - name: FastApi-Todos
+    folder: FastApi-Todos
+    type: file
+    allowUiUpdates: true                 # 화면에서 패널을 고쳐 볼 수 있게 (저장은 Save as 로 새 대시보드에)
+    options:
+      path: /etc/grafana/dashboards
