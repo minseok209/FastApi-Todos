@@ -73,6 +73,12 @@
         #summary .facts { display: flex; flex-wrap: wrap; gap: 4px 14px; margin: 0; padding: 0; color: var(--secondary); font-size: 13px; }
         #summary .facts b { color: var(--label); font-weight: 600; }
         #summary .facts .late b { color: var(--red); }
+        /* 숫자를 누르면 해당 목록으로 바로 이동 */
+        #summary button.fact { border: 0; background: none; padding: 2px 6px; margin: -2px -6px; border-radius: 6px; color: inherit; font-size: inherit; }
+        #summary button.fact:hover { background: var(--fill); }
+        #summary button.fact[aria-pressed="true"] { background: var(--fill); color: var(--label); }
+        li .due.soon { color: var(--orange); font-weight: 600; }
+        .list-foot { display: flex; justify-content: flex-end; margin: 6px 4px 0; }
 
         /* 새 할 일 입력 */
         #todo-form { margin-bottom: 28px; }
@@ -104,7 +110,7 @@
         .search input::placeholder { color: var(--secondary); }
 
         /* 세그먼트 컨트롤 (필터) */
-        .segmented { display: grid; grid-template-columns: repeat(3, 1fr); background: var(--fill); border-radius: 9px; padding: 2px; }
+        .segmented { display: grid; grid-template-columns: repeat(4, 1fr); background: var(--fill); border-radius: 9px; padding: 2px; }
         .segmented button {
             border: 0; background: none; border-radius: 7px; padding: 6px 0;
             font-size: 13px; font-weight: 500; transition: background .2s, box-shadow .2s;
@@ -185,9 +191,9 @@
         </div>
         <div class="meter" role="progressbar" aria-label="완료율" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0" id="stat-meter"><span></span></div>
         <p class="facts">
-            <span>완료 <b id="stat-completed">0</b></span>
-            <span>미완료 <b id="stat-active">0</b></span>
-            <span class="late">기한 지남 <b id="stat-overdue">0</b></span>
+            <button type="button" class="fact" data-filter="completed">완료 <b id="stat-completed">0</b></button>
+            <button type="button" class="fact" data-filter="active">미완료 <b id="stat-active">0</b></button>
+            <button type="button" class="fact late" data-filter="overdue">기한 지남 <b id="stat-overdue">0</b></button>
             <span>남은 높음 <b id="stat-high">0</b></span>
         </p>
     </section>
@@ -215,6 +221,7 @@
         <button type="button" data-filter="all" aria-pressed="true">전체</button>
         <button type="button" data-filter="active" aria-pressed="false">미완료</button>
         <button type="button" data-filter="completed" aria-pressed="false">완료</button>
+        <button type="button" data-filter="overdue" aria-pressed="false">기한 지남</button>
     </div>
 
     <div class="list-head">
@@ -231,6 +238,9 @@
         <ul id="todo-list"></ul>
         <p id="empty" hidden>표시할 To-Do가 없습니다.</p>
     </section>
+    <div class="list-foot">
+        <button type="button" id="clear-done" class="text-btn danger" hidden>완료 항목 삭제</button>
+    </div>
 
     <footer>Version 6.0.0</footer>
 </main>
@@ -296,6 +306,8 @@
           $("stat-high").textContent = stats.active_by_priority.high;
           $("stat-meter").setAttribute("aria-valuenow", stats.completion_rate);
           $("stat-meter").firstElementChild.style.width = `${stats.completion_rate}%`;
+          $("clear-done").textContent = `완료 항목 삭제 (${stats.completed})`;
+          $("clear-done").hidden = stats.completed === 0;
         }
 
         const load = () => run("목록 불러오기", async () => {
@@ -314,10 +326,17 @@
 
         const button = (label, onclick, className = "text-btn") => el("button", { type: "button", textContent: label, onclick, className });
 
+        // 완료되지 않았는데 마감일이 지난 항목
+        const isOverdue = (todo) => !todo.completed && todo.due_date !== null && todo.due_date < today();
+        const FILTERS = {
+          all: () => true,
+          active: (todo) => !todo.completed,
+          completed: (todo) => todo.completed,
+          overdue: isOverdue,
+        };
+
         // 필터 + 검색어에 해당하는 항목만 고른다 (서버 데이터는 그대로 둔다)
-        const visible = () => todos.filter((todo) =>
-          (filter === "all" || (filter === "completed" ? todo.completed : !todo.completed)) &&
-          todo.title.toLowerCase().includes(query));
+        const visible = () => todos.filter((todo) => FILTERS[filter](todo) && todo.title.toLowerCase().includes(query));
 
         // 제목에서 검색어 부분을 <mark>로 강조 (textContent만 쓰므로 HTML 주입 걱정 없음)
         function highlight(title) {
@@ -332,12 +351,17 @@
         // 오늘 날짜를 "YYYY-MM-DD"(로컬 시간)로 — 마감일 문자열과 그대로 비교할 수 있다
         const today = () => new Date().toLocaleDateString("sv-SE");
 
-        // 마감일 표시: 완료되지 않았는데 기한이 지났으면 빨갛게
+        // 오늘부터 마감일까지 남은 날 수 (두 날짜 모두 자정 기준이라 정수로 떨어진다)
+        const daysLeft = (due) => Math.round((Date.parse(due) - Date.parse(today())) / 86400000);
+
+        // 마감일 표시: 기한 지남은 빨갛게, 3일 이내는 주황색 D-day, 완료된 항목은 날짜만
         function dueLabel(todo) {
-          const overdue = !todo.completed && todo.due_date < today();
+          if (todo.completed) return el("span", { className: "due", textContent: `마감 ${todo.due_date}` });
+          if (isOverdue(todo)) return el("span", { className: "due overdue", textContent: `마감 ${todo.due_date} · 기한 지남` });
+          const left = daysLeft(todo.due_date);
           return el("span", {
-            textContent: overdue ? `마감 ${todo.due_date} · 기한 지남` : `마감 ${todo.due_date}`,
-            className: overdue ? "due overdue" : "due",
+            className: left <= 3 ? "due soon" : "due",
+            textContent: `마감 ${todo.due_date} · ${left === 0 ? "오늘 마감" : `D-${left}`}`,
           });
         }
 
@@ -417,15 +441,23 @@
         $("sort").onchange = () => { sort = $("sort").value; load(); };
         $("search").oninput = () => { query = $("search").value.trim().toLowerCase(); render(); };
 
-        for (const btn of $("filters").querySelectorAll("button[data-filter]")) {
-          btn.onclick = () => {
-            filter = btn.dataset.filter;
-            for (const other of $("filters").querySelectorAll("button[data-filter]")) {
-              other.setAttribute("aria-pressed", String(other === btn));
-            }
-            render();
-          };
+        // 필터 바꾸기 — 아래 세그먼트와 위 현황 카드의 숫자 버튼이 같은 상태를 공유한다
+        function setFilter(name) {
+          filter = name;
+          for (const btn of document.querySelectorAll("button[data-filter]")) {
+            btn.setAttribute("aria-pressed", String(btn.dataset.filter === name));
+          }
+          render();
         }
+        for (const btn of document.querySelectorAll("button[data-filter]")) {
+          btn.onclick = () => setFilter(btn.dataset.filter);
+        }
+
+        $("clear-done").onclick = () => {
+          const count = todos.filter((todo) => todo.completed).length;
+          if (!confirm(`완료된 항목 ${count}개를 모두 삭제할까요?`)) return;
+          run("완료 항목 삭제", async () => { await api("/todos/completed", "DELETE"); await load(); });
+        };
 
         $("today").textContent = new Date().toLocaleDateString("ko-KR", { month: "long", day: "numeric", weekday: "long" });
         load();

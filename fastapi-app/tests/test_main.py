@@ -269,7 +269,7 @@ def test_index_page():
     response = client.get("/")
     assert response.status_code == 200
     assert response.headers["content-type"].startswith("text/html")
-    assert "Version 5.0.0" in response.text
+    assert "Version 6.0.0" in response.text
     assert 'id="search"' in response.text        # 검색창이 화면에 있는지
     assert 'id="sort"' in response.text          # 정렬 선택이 화면에 있는지
 
@@ -347,3 +347,27 @@ def test_todo_changes_metric_counts_operations():
     client.delete("/todos/1")                    # 404 는 변경이 아니므로 세지 않는다
     after = changes()
     assert {op: after[op] - before[op] for op in after} == {"create": 1, "update": 1, "delete": 1}
+
+
+def test_delete_completed_todos():
+    save_todos([make(1, "done", completed=True), make(2, "todo"), make(3, "done too", completed=True)])
+    response = client.delete("/todos/completed")
+    assert response.status_code == 200
+    assert response.json() == {"deleted": 2}
+    assert [t.id for t in load_todos()] == [2]
+
+
+def test_delete_completed_when_nothing_done():
+    save_todos([make(1, "todo")])
+    assert client.delete("/todos/completed").json() == {"deleted": 0}
+    assert len(load_todos()) == 1
+
+
+def test_delete_completed_counts_in_metrics():
+    def deletes():
+        return metric_value(client.get("/metrics").text, 'todo_changes_total{operation="delete"}')
+
+    save_todos([make(1, "a", completed=True), make(2, "b", completed=True)])
+    before = deletes()
+    client.delete("/todos/completed")
+    assert deletes() - before == 2

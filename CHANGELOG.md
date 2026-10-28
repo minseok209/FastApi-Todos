@@ -7,6 +7,9 @@
 ### Added
 - 할 일 현황 요약 카드 — 완료율(%)과 진행 막대, 전체·완료·미완료·기한 지남·남은 높음 우선순위 개수 (검색·필터와 상관없이 전체 기준)
 - 현황 API `GET /todos/stats` (`total`, `completed`, `active`, `overdue`, `completion_rate`, `active_by_priority`)
+- `기한 지남` 필터 추가 (전체 / 미완료 / 완료 / 기한 지남), 현황 카드의 완료·미완료·기한 지남 숫자를 누르면 해당 목록으로 바로 이동
+- 마감 D-day 표시 — `D-6`, 3일 이내는 주황색 `D-2`·`오늘 마감`, 지난 항목은 빨간색 `기한 지남`
+- 완료 항목 일괄 삭제 버튼 `완료 항목 삭제 (N)` + API `DELETE /todos/completed` (`{"deleted": N}`)
 - Prometheus 메트릭 엔드포인트 `/metrics` (`prometheus-fastapi-instrumentator`) — 요청 수·응답 시간 자동 수집, Swagger 목록에서는 숨김
 - 커스텀 메트릭: `todo_items{status=completed|active|overdue}`, `todo_completion_rate_percent`, `todo_changes_total{operation=create|update|delete}`
 
@@ -16,9 +19,13 @@
 - Grafana 데이터 소스(Prometheus)와 `FastApi-Todos 모니터링` 대시보드(시스템·애플리케이션·To-Do 현황 16개 패널) 자동 등록
 - `scripts/traffic.py` — 조회·추가·오류·동시 접속 부하를 단계별로 보내 그래프 변화를 관찰하는 스크립트
 
+### Fixed
+- `scripts/traffic.py` 동시 접속 단계에서 요청마다 새 연결을 열어 Windows 임시 포트가 고갈되던 문제(`WinError 10048`) — 스레드별 keep-alive 연결 재사용, `--start`로 중간 단계부터 재실행
+- 단위 테스트의 화면 버전 확인을 `Version 6.0.0`으로 수정
+
 ### Testing
-- 현황 요약·`/metrics`·커스텀 메트릭 단위 테스트 7개 추가 (총 45개, `main.py` 커버리지 99%)
-- 배포 환경 API 테스트에 현황 요약·`/metrics` 확인 추가
+- 현황 요약·`/metrics`·커스텀 메트릭·완료 항목 일괄 삭제 단위 테스트 10개 추가 (총 48개, `main.py` 커버리지 99%)
+- 배포 환경 API 테스트에 현황 요약·`/metrics`·완료 항목 일괄 삭제 확인 추가
 
 ## Version 5.0.0
 

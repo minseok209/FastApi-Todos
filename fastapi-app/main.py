@@ -152,6 +152,18 @@ def create_todo(payload: TodoIn) -> TodoItem:
     return todo
 
 
+@app.delete("/todos/completed")                  # 완료 항목 한꺼번에 삭제 (v6.0.0) — /todos/{todo_id} 보다 먼저 선언해야 한다
+def delete_completed_todos() -> dict[str, int]:
+    todos = load_todos()
+    remaining = [t for t in todos if not t.completed]
+    deleted = len(todos) - len(remaining)
+    if deleted:
+        save_todos(remaining)
+        TODO_CHANGES.labels("delete").inc(deleted)
+        logger.info("completed todos deleted: count=%s", deleted)
+    return {"deleted": deleted}
+
+
 @app.put("/todos/{todo_id}", responses=NOT_FOUND_RESPONSE)                    # 수정
 def update_todo(todo_id: int, payload: TodoIn) -> TodoItem:
     todos = load_todos()

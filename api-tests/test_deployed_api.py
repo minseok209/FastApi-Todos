@@ -144,3 +144,13 @@ def test_metrics_endpoint(api):                              # 7주차 Prometheu
     assert response.status_code == 200
     assert "http_requests_total" in response.text
     assert "todo_items" in response.text
+
+
+def test_delete_completed_only_removes_done_items(api):     # v6.0.0 완료 항목 일괄 삭제
+    done = api.post("/todos", json={"title": f"{PREFIX} 일괄 완료", "completed": True}).json()
+    todo = api.post("/todos", json={"title": f"{PREFIX} 일괄 미완료"}).json()
+    response = api.delete("/todos/completed")
+    assert response.status_code == 200
+    assert response.json()["deleted"] >= 1
+    left = ids(api.get("/todos", params={"q": f"{PREFIX} 일괄"}))
+    assert done["id"] not in left and todo["id"] in left

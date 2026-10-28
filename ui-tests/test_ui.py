@@ -168,7 +168,7 @@ def test_complete_and_filter(todo_page: Page, shot):
     row.get_by_role("checkbox").check()
     expect(row.locator(".title")).to_have_class(re.compile("done"))
 
-    todo_page.get_by_role("button", name="미완료").click()
+    todo_page.locator("#filters").get_by_role("button", name="미완료").click()
     expect(item(todo_page, f"{PREFIX} 완료할 일")).to_have_count(0)
     todo_page.get_by_role("button", name="완료", exact=True).click()
     expect(item(todo_page, f"{PREFIX} 완료할 일")).to_be_visible()
