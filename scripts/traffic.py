@@ -7,27 +7,40 @@
 이번 실행에서 만든 항목은 제목 앞에 고유 접두어가 붙고, 마지막 단계에서 모두 지운다.
 """
 import argparse
+import http.client
 import json
+import threading
 import time
-import urllib.error
-import urllib.request
 import uuid
+from urllib.parse import urlsplit
 from concurrent.futures import ThreadPoolExecutor
 from datetime import date, datetime, timedelta
 
 PREFIX = f"traffic-{uuid.uuid4().hex[:6]}"
 
 
+_local = threading.local()                       # 스레드마다 연결 하나를 계속 재사용 (keep-alive)
+
+
 def request(base, method, path, body=None):
+    # 요청마다 새 연결을 열면 Windows 에서 임시 포트가 바닥난다 (WinError 10048) → 연결을 재사용
     data = json.dumps(body).encode() if body is not None else None
-    req = urllib.request.Request(base + path, data=data, method=method,
-                                 headers={"Content-Type": "application/json"} if data else {})
-    try:
-        with urllib.request.urlopen(req, timeout=10) as res:
+    headers = {"Content-Type": "application/json"} if data else {}
+    for attempt in (1, 2):                       # 서버가 연결을 끊었으면 한 번만 다시 연결
+        conn = getattr(_local, "conn", None)
+        if conn is None:
+            url = urlsplit(base)
+            conn = _local.conn = http.client.HTTPConnection(url.hostname, url.port or 80, timeout=10)
+        try:
+            conn.request(method, path, body=data, headers=headers)
+            res = conn.getresponse()
             raw = res.read()
-            return res.status, json.loads(raw) if raw and res.headers.get_content_type() == "application/json" else None
-    except urllib.error.HTTPError as e:
-        return e.code, None
+            return res.status, json.loads(raw) if raw and res.getheader("Content-Type", "").startswith("application/json") else None
+        except (http.client.HTTPException, OSError):
+            conn.close()
+            _local.conn = None
+            if attempt == 2:
+                raise
 
 
 def phase(name, seconds, job):
@@ -49,6 +62,7 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--base-url", default="http://163.239.77.83:5001")
     parser.add_argument("--seconds", type=int, default=90, help="부하 단계 하나의 길이 (기본 90초)")
+    parser.add_argument("--start", type=int, default=1, help="이 번호의 단계부터 실행 (중간에 멈췄을 때 이어서)")
     args = parser.parse_args()
     base, secs = args.base_url.rstrip("/"), args.seconds
     created = []
@@ -96,29 +110,37 @@ def main():
         def worker(_):
             n = 0
             for _ in until(seconds):
-                request(base, "GET", "/todos")
-                n += 1
+                try:
+                    request(base, "GET", "/todos")
+                    n += 1
+                except OSError:                  # 내 PC 쪽 연결 오류는 세지 않고 계속 (부하 단계를 멈추지 않는다)
+                    time.sleep(0.1)
             return n
         with ThreadPoolExecutor(10) as pool:
             return {"GET": sum(pool.map(worker, range(10)))}
 
-    def cleanup(_):                               # 이번 실행에서 만든 항목 삭제 (DELETE, 204)
-        for todo in created:
+    def cleanup(_):                               # 이 스크립트가 만든 항목(이전 실행 포함) 삭제 (DELETE, 204)
+        _, leftovers = request(base, "GET", "/todos?q=traffic-")
+        for todo in leftovers:
             request(base, "DELETE", f"/todos/{todo['id']}")
-        return {"DELETE": len(created)}
+        return {"DELETE": len(leftovers)}
 
     def idle(seconds):
         time.sleep(seconds)
         return {}
 
     print(f"대상: {base}  (접두어 {PREFIX})")
-    phase("1. 대기 (기준선: Prometheus 수집 요청만)", 60, idle)
-    phase("2. 조회 위주 사용", secs, browse)
-    phase("3. 할 일 추가·완료 처리", secs, write)
-    phase("4. 잘못된 요청 (404·422)", secs, errors)
-    phase("5. 동시 접속 부하 (10명)", secs, burst)
-    phase("6. 만든 항목 삭제", 0, cleanup)
-    phase("7. 대기 (원래 상태로 돌아오는지)", 60, idle)
+    phases = [
+        ("1. 대기 (기준선: Prometheus 수집 요청만)", 60, idle),
+        ("2. 조회 위주 사용", secs, browse),
+        ("3. 할 일 추가·완료 처리", secs, write),
+        ("4. 잘못된 요청 (404·422)", secs, errors),
+        ("5. 동시 접속 부하 (10명)", secs, burst),
+        ("6. 만든 항목 삭제", 0, cleanup),
+        ("7. 대기 (원래 상태로 돌아오는지)", 60, idle),
+    ]
+    for name, seconds, job in phases[args.start - 1:]:
+        phase(name, seconds, job)
 
 
 if __name__ == "__main__":
