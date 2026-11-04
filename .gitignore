@@ -10,3 +10,9 @@ ui_report/
 report/
 coverage.xml
 .scannerwork/
+
+# 10주차 JMeter 실행 결과 (Jenkins 워크스페이스·로컬 실행)
+jmeter/report/
+jmeter/results.jtl
+jmeter/jmeter.log
+.env

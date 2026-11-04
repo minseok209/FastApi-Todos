@@ -1,0 +1,270 @@
+// 10주차: 성능·부하 테스트 파이프라인
+// Checkout → Setup → Test & Coverage → Build → Push → Deploy(팀 서버) → Build JMeter Image → Run JMeter Load Test → Performance Check
+// Jenkins Job "Jenkins Deploy Jmeter" 의 Pipeline script 칸에 붙여 넣어 사용한다.
+//
+// 가이드 원본과 다른 점
+// - 경로: 이 저장소는 FastApi_Todos/ 폴더 없이 루트에 fastapi-app/, jmeter/ 가 있다.
+// - 팀 서버(sogang003)는 팀원 5명이 같이 쓰는 계정 → 가이드 기본값(FastApi-app, 8003)을 쓰면
+//   다른 팀원 컨테이너를 지울 수 있어서, 본인 포트(8055)와 고유 컨테이너 이름을 쓴다.
+// - SSH 자격증명 ID 는 'deploy-key', 이미지 태그는 다른 Job 과 겹치지 않게 jmeter-빌드번호.
+// - docker cp 버그 수정: 가이드처럼 report 폴더를 먼저 만들고 `docker cp 컨테이너:/jmeter/report report` 를 하면
+//   report/report/index.html 로 복사되어 HTML Report 가 비어 보인다 → `report/.` 로 내용만 복사.
+// - JMeter 컨테이너가 loadtest-net(개인 서버 docker compose 네트워크)에 붙어 결과를 InfluxDB 로도 보낸다 → Grafana.
+pipeline {
+    agent any
+
+    parameters {
+        string(name: 'THREADS', defaultValue: '20', description: '동시 사용자 수 (JMeter 스레드)')
+        string(name: 'RAMP_UP', defaultValue: '10', description: '사용자를 모두 띄우는 데 걸리는 시간(초)')
+        string(name: 'LOOPS',   defaultValue: '30', description: '사용자 1명이 시나리오(요청 9개)를 반복하는 횟수')
+    }
+
+    environment {
+        // DockerHub
+        DOCKERHUB_CREDENTIALS = 'dockerhub-credentials'   // Jenkins Credentials ID (Docker Hub Access Token)
+        IMAGE_NAME     = 'heramt/fastapi-app'
+        IMAGE_TAG      = "jmeter-${env.BUILD_NUMBER}"     // 다른 Job 의 빌드 번호 태그와 겹치지 않게
+
+        // 팀 서버 (공용 계정 — 본인 포트·컨테이너 이름만 사용)
+        REMOTE_USER    = 'sogang003'
+        REMOTE_HOST    = '163.239.77.76'
+        CONTAINER_NAME = 'fastapi-jmeter-minseok'
+        HOST_PORT      = '8055'                           // 본인 포트 범위(805x), 방화벽 허용됨
+        CONTAINER_PORT = '8000'                           // Dockerfile 의 uvicorn 포트
+
+        // GitHub
+        REPO_URL       = 'https://github.com/minseok209/FastApi-Todos.git'
+        BRANCH_NAME    = 'main'
+        APP_DIR        = 'fastapi-app'
+
+        // JMeter
+        JMETER_IMAGE_NAME = 'my-jmeter'
+        JMETER_DIR        = 'jmeter'
+        LOADTEST_NETWORK  = 'loadtest-net'                // docker-compose.yml 의 네트워크 (InfluxDB 가 있는 곳)
+        ERROR_THRESHOLD   = '1.0'                         // 오류율(%)이 이보다 크면 빌드를 UNSTABLE 로 표시
+    }
+
+    options {
+        timeout(time: 30, unit: 'MINUTES')
+        disableConcurrentBuilds()
+    }
+
+    stages {
+        // 1. 코드 가져오기
+        stage('Checkout') {
+            steps {
+                git url: "${REPO_URL}", branch: "${BRANCH_NAME}"
+            }
+        }
+
+        // 2. 파이썬 가상환경 + 패키지 설치 + 의존성 취약점 점검(pip-audit)
+        stage('Setup Environment & Install Dependencies') {
+            steps {
+                sh '''
+                    python3 -m venv venv
+                    . venv/bin/activate
+                    python -m pip install --upgrade pip
+                    pip install -r "$APP_DIR/requirements.txt"
+
+                    # 의존성 취약점 점검 (공급망 보안) — 결과는 콘솔 로그에서 확인, 빌드는 멈추지 않음
+                    pip install pip-audit
+                    pip-audit -r "$APP_DIR/requirements.txt" || true
+                '''
+            }
+        }
+
+        // 3. 단위 테스트 + 커버리지 (실패하면 여기서 중단 → 배포·부하 테스트 안 함)
+        stage('Test & Coverage') {
+            steps {
+                sh '''
+                    . venv/bin/activate
+                    mkdir -p pytest_report
+                    python -m pytest "$APP_DIR/tests" \
+                      --html=pytest_report/report.html \
+                      --self-contained-html \
+                      --cov="$APP_DIR" \
+                      --cov-config="$APP_DIR/pyproject.toml" \
+                      --cov-report=xml:coverage.xml \
+                      --cov-report=html:htmlcov
+                '''
+            }
+            post {
+                always {
+                    publishHTML(target: [
+                        reportName : 'Pytest HTML Report',
+                        reportDir  : 'pytest_report',
+                        reportFiles: 'report.html',
+                        keepAll    : true,
+                        alwaysLinkToLastBuild: true,
+                        allowMissing: true
+                    ])
+                    publishHTML(target: [
+                        reportName : 'Coverage Report',
+                        reportDir  : 'htmlcov',
+                        reportFiles: 'index.html',
+                        keepAll    : true,
+                        alwaysLinkToLastBuild: true,
+                        allowMissing: true
+                    ])
+                }
+            }
+        }
+
+        // 4. FastAPI 앱 이미지 빌드
+        stage('Build') {
+            steps {
+                dir("${APP_DIR}") {
+                    script {
+                        docker.build("${IMAGE_NAME}:${IMAGE_TAG}", "--pull .")
+                    }
+                }
+            }
+        }
+
+        // 5. Docker Hub 로 푸시
+        stage('Push') {
+            steps {
+                script {
+                    docker.withRegistry('https://index.docker.io/v1/', DOCKERHUB_CREDENTIALS) {
+                        def image = docker.image("${IMAGE_NAME}:${IMAGE_TAG}")
+                        image.push()
+                        image.push('latest')
+                    }
+                }
+            }
+        }
+
+        // 6. 팀 서버에 배포 (서버가 먼저 떠야 부하 테스트가 가능)
+        stage('Deploy') {
+            steps {
+                sshagent(credentials: ['deploy-key']) {
+                    sh '''
+ssh -o StrictHostKeyChecking=accept-new ${REMOTE_USER}@${REMOTE_HOST} \
+  "IMAGE='${IMAGE_NAME}:${IMAGE_TAG}' CONTAINER_NAME='${CONTAINER_NAME}' HOST_PORT='${HOST_PORT}' CONTAINER_PORT='${CONTAINER_PORT}' bash -se" <<'ENDSSH'
+set -euo pipefail
+docker pull "$IMAGE"
+# 본인 컨테이너만 지운다 (공용 계정이라 이름으로 정확히 지정)
+docker rm -f "$CONTAINER_NAME" 2>/dev/null || true
+docker run -d --name "$CONTAINER_NAME" \
+  --restart unless-stopped \
+  --security-opt no-new-privileges:true \
+  --cap-drop ALL \
+  -p "$HOST_PORT:$CONTAINER_PORT" \
+  "$IMAGE"
+docker ps --filter "name=$CONTAINER_NAME"
+ENDSSH
+'''
+                }
+                // 컨테이너가 요청을 받을 수 있을 때까지 최대 60초 대기 (바로 부하를 걸면 첫 요청들이 실패로 잡힌다)
+                sh '''
+                    for i in $(seq 1 30); do
+                        if curl -fsS -o /dev/null "http://$REMOTE_HOST:$HOST_PORT/todos"; then
+                            echo "앱 응답 확인: http://$REMOTE_HOST:$HOST_PORT"; exit 0
+                        fi
+                        sleep 2
+                    done
+                    echo "앱이 60초 안에 응답하지 않음"; exit 1
+                '''
+            }
+        }
+
+        // 7. JMeter 실행 이미지 빌드
+        stage('Build JMeter Image') {
+            steps {
+                dir("${JMETER_DIR}") {
+                    script {
+                        docker.build("${JMETER_IMAGE_NAME}:latest", ".")
+                    }
+                }
+            }
+        }
+
+        // 8. JMeter 부하 테스트 → HTML 리포트 (+ InfluxDB 로 실시간 결과 전송)
+        stage('Run JMeter Load Test') {
+            steps {
+                sh '''
+                    BASE_DIR="$WORKSPACE/$JMETER_DIR"
+                    rm -rf "$BASE_DIR/report" "$BASE_DIR/jmeter.log" "$BASE_DIR/results.jtl"
+                    mkdir -p "$BASE_DIR/report"
+
+                    # 개인 서버에 docker compose(InfluxDB)가 떠 있으면 같은 네트워크에 붙여 결과를 InfluxDB 로도 보낸다
+                    # (없으면 HTML 리포트만 만든다 — --network host 는 쓰지 않는다)
+                    NETWORK_OPT=""
+                    if docker network inspect "$LOADTEST_NETWORK" >/dev/null 2>&1; then
+                        NETWORK_OPT="--network $LOADTEST_NETWORK"
+                        echo "InfluxDB 전송: $LOADTEST_NETWORK 네트워크 사용"
+                    else
+                        echo "$LOADTEST_NETWORK 네트워크 없음 → InfluxDB 전송 생략"
+                    fi
+
+                    # 컨테이너 생성 (root 아님 — Dockerfile 의 USER jmeter, 작업 폴더 /jmeter)
+                    CONTAINER_ID=$(docker create $NETWORK_OPT --security-opt no-new-privileges:true --cap-drop ALL \
+                        "$JMETER_IMAGE_NAME:latest" \
+                        jmeter -n -t test.jmx -l results.jtl -j jmeter.log \
+                          -JTARGET_HOST="$REMOTE_HOST" -JTARGET_PORT="$HOST_PORT" \
+                          -JTHREADS="$THREADS" -JRAMP_UP="$RAMP_UP" -JLOOPS="$LOOPS" \
+                          -JAPP_NAME="jenkins-build-$BUILD_NUMBER" \
+                          -Jjmeter.save.saveservice.output_format=csv \
+                          -e -o report)
+                    trap 'docker rm -f "$CONTAINER_ID" >/dev/null 2>&1 || true' EXIT
+
+                    docker cp "$BASE_DIR/fastapi_test_plan.jmx" "$CONTAINER_ID:/jmeter/test.jmx"
+
+                    # 부하 테스트 실행 — 실패해도 리포트는 꺼내도록 계속 진행
+                    docker start -a "$CONTAINER_ID" || true
+
+                    # 결과 꺼내기 — report/. 로 "내용만" 복사해야 report/index.html 위치가 맞는다
+                    docker cp "$CONTAINER_ID:/jmeter/report/." "$BASE_DIR/report" || true
+                    docker cp "$CONTAINER_ID:/jmeter/results.jtl" "$BASE_DIR/results.jtl" || true
+                    docker cp "$CONTAINER_ID:/jmeter/jmeter.log" "$BASE_DIR/jmeter.log" || true
+                '''
+            }
+            post {
+                always {
+                    publishHTML(target: [
+                        reportName : 'JMeter HTML Report',
+                        reportDir  : "${JMETER_DIR}/report",
+                        reportFiles: 'index.html',
+                        keepAll    : true,
+                        alwaysLinkToLastBuild: true,
+                        allowMissing: true
+                    ])
+                    archiveArtifacts artifacts: "${JMETER_DIR}/results.jtl, ${JMETER_DIR}/jmeter.log", allowEmptyArchive: true
+                }
+            }
+        }
+
+        // 9. 결과 요약을 콘솔에 출력하고, 오류율이 기준을 넘으면 UNSTABLE(노란색)로 표시
+        stage('Performance Check') {
+            steps {
+                script {
+                    def summary = sh(returnStdout: true, script: '''
+                        python3 - "$JMETER_DIR/report/statistics.json" <<'EOF'
+import json, sys
+stats = json.load(open(sys.argv[1], encoding="utf-8"))
+# 합계 행은 보통 "Total" (JVM 언어가 한국어면 "총계") — 요청 수가 가장 많은 행이 합계
+total = stats.pop("Total" if "Total" in stats else max(stats, key=lambda k: stats[k]["sampleCount"]))
+for name, s in sorted(stats.items()):
+    print(f"{name:45s} {s['sampleCount']:6d}건  평균 {s['meanResTime']:7.1f}ms  95% {s['pct2ResTime']:7.1f}ms  오류 {s['errorPct']:.2f}%")
+print(f"{'TOTAL':45s} {total['sampleCount']:6d}건  평균 {total['meanResTime']:7.1f}ms  95% {total['pct2ResTime']:7.1f}ms  "
+      f"오류 {total['errorPct']:.2f}%  처리량 {total['throughput']:.1f}/s")
+print(f"ERROR_PCT={total['errorPct']}")
+EOF
+                    ''').trim()
+                    echo summary
+                    def errorPct = Double.parseDouble(summary.readLines().last().replace('ERROR_PCT=', ''))
+                    if (errorPct > Double.parseDouble(env.ERROR_THRESHOLD)) {
+                        unstable("오류율 ${errorPct}% > 기준 ${env.ERROR_THRESHOLD}%")
+                    }
+                }
+            }
+        }
+    }
+
+    post {
+        always {
+            sh 'docker image prune -f || true'   // Jenkins 서버에 쌓이는 이미지 정리
+            echo 'Pipeline completed.'
+        }
+    }
+}

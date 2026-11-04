@@ -1,0 +1,15 @@
+# 10주차: JMeter 결과가 쌓이는 InfluxDB 를 Grafana 데이터 소스로 자동 등록
+# JMeter Backend Listener → influxdb:8086 (jmeter DB) → 이 데이터 소스 → "JMeter 부하 테스트 (InfluxDB)" 대시보드
+apiVersion: 1
+
+datasources:
+  - name: InfluxDB-JMeter
+    uid: influxdb-jmeter
+    type: influxdb
+    access: proxy
+    url: http://influxdb:8086           # 같은 compose 네트워크(loadtest-net)의 서비스 이름으로 접속
+    jsonData:
+      version: InfluxQL                  # InfluxDB 1.x 쿼리 언어
+      dbName: jmeter
+      httpMode: GET
+    editable: false

@@ -2,6 +2,34 @@
 
 최신 버전을 위에 누적해서 기록한다.
 
+## Version 7.0.0
+
+### Added
+- 태그(카테고리) — 할 일마다 태그 최대 5개(각 1~20자), 추가 폼·편집 시트에서 쉼표로 입력, 목록에 `#태그` 칩으로 표시
+- 태그 필터 — 검색창 아래 태그 칩(사용 개수 표시)이나 항목의 태그를 누르면 그 태그만 보기, 다시 누르면 해제 (상태 필터·검색과 함께 동작)
+- 태그 API — `GET /todos?tag=과제` (대소문자 무시), `GET /todos/tags` (`[{"tag": "과제", "count": 2}]`, 많이 쓴 순)
+- 마감일순 정렬 — 정렬 선택에 `마감일순` 추가, API `GET /todos?sort=due` (마감일 없는 항목은 맨 뒤)
+- 대소문자만 다른 중복 태그는 하나로 합침, 태그가 없는 기존 데이터는 빈 목록으로 읽음 (하위 호환)
+
+### Fixed
+- **동시 요청 시 데이터 손상** — JMeter 부하 테스트(동시 사용자)에서 발견. FastAPI 가 요청을 여러 스레드에서 동시에 처리하는데
+  `todo.json` 읽기·쓰기에 잠금이 없어, 쓰는 중인 파일을 읽은 요청이 `JSONDecodeError`(500)로 실패하고
+  두 요청이 같은 목록을 읽고 저장해 추가한 항목이 사라짐 (60건 동시 추가 → 500 오류 18건, 실제 저장 17건).
+  파일 읽기·쓰기와 "읽기 → 수정 → 저장" 전체를 잠금(`threading.RLock`)으로 묶어 수정 → 60건 모두 201, 중복·유실 없음
+
+### Changed (성능·부하 테스트 환경)
+- `jmeter/fastapi_test_plan.jmx` — 실제 엔드포인트 9개(화면·목록·현황·추가·검색·태그·태그 목록·수정·삭제) 시나리오,
+  JSON 헤더·본문, 추가한 id 를 추출해 수정·삭제 (테스트 후 데이터가 남지 않음), `-JTHREADS/-JRAMP_UP/-JLOOPS` 로 부하 조절
+- `jmeter/Dockerfile` — JMeter 5.6.3 (Log4Shell 대상 5.4.1 대신), `eclipse-temurin:17-jre`, sha512 검증, root 아닌 `jmeter` 계정
+- `Jenkinsfile.jmeter` — Test → Build → Push → 팀 서버 배포(`163.239.77.76:8055`) → JMeter 부하 테스트 → JMeter HTML Report → 오류율 1% 초과 시 UNSTABLE
+- `docker-compose.yml` — InfluxDB 1.12.4 (외부 포트 없음) + JMeter(`--profile loadtest`) 추가, 모든 서비스를 `loadtest-net` 네트워크로 연결
+- Grafana — InfluxDB 데이터 소스와 `JMeter 부하 테스트 (InfluxDB)` 대시보드(처리량·응답 시간·동시 사용자·오류·엔드포인트별 요약) 자동 등록
+
+### Testing
+- 태그·마감일순 정렬·동시 요청 단위 테스트 15개 추가 (총 63개, `main.py` 커버리지 99%)
+- 배포 환경 API 테스트에 태그 필터·태그 목록·태그 개수 제한·마감일순 정렬 추가
+- 로컬 JMeter 실행: 20명 × 20회 × 9요청 = 3,600건, 평균 60.5ms, 오류 0%
+
 ## Version 6.0.0
 
 ### Added
