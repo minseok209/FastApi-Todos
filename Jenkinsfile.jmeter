@@ -202,7 +202,7 @@ ENDSSH
                         "$JMETER_IMAGE_NAME:latest" \
                         jmeter -n -t test.jmx -l results.jtl -j jmeter.log \
                           -JTARGET_HOST="$REMOTE_HOST" -JTARGET_PORT="$HOST_PORT" \
-                          -JTHREADS="$THREADS" -JRAMP_UP="$RAMP_UP" -JLOOPS="$LOOPS" \
+                          -JTHREADS="${THREADS:-20}" -JRAMP_UP="${RAMP_UP:-10}" -JLOOPS="${LOOPS:-30}" \
                           -JAPP_NAME="jenkins-build-$BUILD_NUMBER" \
                           -Jjmeter.save.saveservice.output_format=csv \
                           -e -o report)
@@ -235,26 +235,32 @@ ENDSSH
         }
 
         // 9. 결과 요약을 콘솔에 출력하고, 오류율이 기준을 넘으면 UNSTABLE(노란색)로 표시
+        //    숫자 비교는 파이썬에서 한다 (Jenkins 샌드박스는 Double.parseDouble 같은 메서드를 막는다)
+        //    종료 코드: 0 = 통과, 3 = 오류율 기준 초과, 그 밖 = 리포트 없음 등 실패
         stage('Performance Check') {
             steps {
                 script {
-                    def summary = sh(returnStdout: true, script: '''
-                        python3 - "$JMETER_DIR/report/statistics.json" <<'EOF'
+                    def rc = sh(returnStatus: true, script: '''
+                        python3 - "$JMETER_DIR/report/statistics.json" "$ERROR_THRESHOLD" <<'EOF'
 import json, sys
 stats = json.load(open(sys.argv[1], encoding="utf-8"))
+threshold = float(sys.argv[2])
 # 합계 행은 보통 "Total" (JVM 언어가 한국어면 "총계") — 요청 수가 가장 많은 행이 합계
 total = stats.pop("Total" if "Total" in stats else max(stats, key=lambda k: stats[k]["sampleCount"]))
 for name, s in sorted(stats.items()):
     print(f"{name:45s} {s['sampleCount']:6d}건  평균 {s['meanResTime']:7.1f}ms  95% {s['pct2ResTime']:7.1f}ms  오류 {s['errorPct']:.2f}%")
 print(f"{'TOTAL':45s} {total['sampleCount']:6d}건  평균 {total['meanResTime']:7.1f}ms  95% {total['pct2ResTime']:7.1f}ms  "
       f"오류 {total['errorPct']:.2f}%  처리량 {total['throughput']:.1f}/s")
-print(f"ERROR_PCT={total['errorPct']}")
+if total["errorPct"] > threshold:
+    print(f"오류율 {total['errorPct']:.2f}% > 기준 {threshold}%")
+    sys.exit(3)
+print(f"오류율 기준 통과 ({threshold}% 이하)")
 EOF
-                    ''').trim()
-                    echo summary
-                    def errorPct = Double.parseDouble(summary.readLines().last().replace('ERROR_PCT=', ''))
-                    if (errorPct > Double.parseDouble(env.ERROR_THRESHOLD)) {
-                        unstable("오류율 ${errorPct}% > 기준 ${env.ERROR_THRESHOLD}%")
+                    ''')
+                    if (rc == 3) {
+                        unstable("오류율이 기준 ${env.ERROR_THRESHOLD}% 를 넘음")
+                    } else if (rc != 0) {
+                        error("JMeter 결과(statistics.json)를 읽지 못함 — Run JMeter Load Test 단계 로그 확인")
                     }
                 }
             }
