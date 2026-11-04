@@ -142,7 +142,7 @@ services:
 
   # 10주차: 부하 테스트 실행기 — 평소 `docker compose up -d` 에는 포함되지 않는다 (profiles)
   #   실행: docker compose --profile loadtest run --rm jmeter
-  #   부하 조절: THREADS=30 LOOPS=50 docker compose --profile loadtest run --rm jmeter
+  #   부하 조절: THREADS=100 THINK_MS=200 docker compose --profile loadtest run --rm jmeter
   jmeter:
     build:
       context: ./jmeter
@@ -158,9 +158,10 @@ services:
       - fastapi-app
       - influxdb
     environment:
-      - THREADS=${THREADS:-20}                  # 동시 사용자 수
-      - RAMP_UP=${RAMP_UP:-20}                  # 사용자를 모두 띄우는 데 걸리는 시간(초)
-      - LOOPS=${LOOPS:-30}                      # 사용자 1명이 시나리오(요청 9개)를 반복하는 횟수
+      - THREADS=${THREADS:-50}                  # 동시 사용자 수
+      - RAMP_UP=${RAMP_UP:-30}                  # 사용자를 모두 띄우는 데 걸리는 시간(초)
+      - LOOPS=${LOOPS:-20}                      # 사용자 1명이 시나리오(요청 9개)를 반복하는 횟수
+      - THINK_MS=${THINK_MS:-300}               # 요청 사이 생각 시간(ms) — 없으면 요청이 너무 빨라 사용자들이 겹치지 않는다
     volumes:
       # 테스트 계획만 읽기 전용으로 넣는다 — 폴더 전체를 마운트하면 컨테이너의 jmeter 계정(uid 1000)이
       # 서버 계정 소유 폴더에 결과를 못 써서 실패한다. 결과·리포트는 컨테이너 안 /jmeter/out 에 만든다.
@@ -172,7 +173,7 @@ services:
         rm -rf out && mkdir out &&
         jmeter -n -t fastapi_test_plan.jmx -l out/results.jtl -j out/jmeter.log
         -JTARGET_HOST=fastapi-app -JTARGET_PORT=8000
-        -JTHREADS=$${THREADS} -JRAMP_UP=$${RAMP_UP} -JLOOPS=$${LOOPS}
+        -JTHREADS=$${THREADS} -JRAMP_UP=$${RAMP_UP} -JLOOPS=$${LOOPS} -JTHINK_MS=$${THINK_MS}
         '-JINFLUX_URL=http://influxdb:8086/write?db=jmeter' -JAPP_NAME=compose-fastapi-app
         -Jjmeter.save.saveservice.output_format=csv
         -e -o out/report

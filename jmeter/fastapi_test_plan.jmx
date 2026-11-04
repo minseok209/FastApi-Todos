@@ -7,11 +7,12 @@
   - POST 본문: postBodyRaw + Content-Type: application/json 헤더(HTTP Header Manager)로 JSON 을 실제로 보낸다.
   - 쓰기 흐름: 추가(POST) → 응답의 id 추출 → 수정(PUT) → 삭제(DELETE). 테스트가 끝나도 서버 데이터가 쌓이지 않는다.
   - 부하 크기: -JTHREADS / -JRAMP_UP / -JLOOPS 로 바꿀 수 있다 (기본값은 가이드와 같은 10명 · 10초 · 1회).
+  - 생각 시간: -JTHINK_MS 로 요청 사이에 쉬는 시간(ms)을 준다. 0 이면 사용자들이 거의 겹치지 않는다.
   - InfluxDB Backend Listener: 결과를 5초마다 InfluxDB 로 보내 Grafana 에서 실시간 그래프로 본다.
     주소는 -JINFLUX_URL 로 바꿀 수 있고, InfluxDB 가 없으면 전송만 실패하고 테스트는 그대로 진행된다.
 
   실행 예)
-    jmeter -n -t fastapi_test_plan.jmx -JTARGET_HOST=163.239.77.76 -JTARGET_PORT=8055 -JTHREADS=20 -JLOOPS=30 -l results.jtl -e -o report
+    jmeter -n -t fastapi_test_plan.jmx -JTARGET_HOST=163.239.77.76 -JTARGET_PORT=8055 -JTHREADS=50 -JRAMP_UP=30 -JLOOPS=20 -JTHINK_MS=300 -l results.jtl -e -o report
 -->
 <jmeterTestPlan version="1.2" properties="5.0" jmeter="5.6.3">
   <hashTree>
@@ -81,6 +82,13 @@
         <boolProp name="ThreadGroup.same_user_on_next_iteration">true</boolProp>
       </ThreadGroup>
       <hashTree>
+        <!-- Think Time: 사용자가 화면을 보고 다음 행동을 하기까지의 시간 — 모든 요청 앞에 THINK_MS(ms) 만큼 쉰다.
+             이 앱은 요청 하나가 2ms 안팎이라 쉬는 시간이 없으면 사용자 1명이 0.5초 만에 시나리오를 끝내 버려
+             램프업 동안 사용자들이 서로 겹치지 않는다 (= 실제 동시 사용자 1명). 기본값 0 은 가이드와 같은 동작. -->
+        <ConstantTimer guiclass="ConstantTimerGui" testclass="ConstantTimer" testname="Think Time" enabled="true">
+          <stringProp name="ConstantTimer.delay">${__P(THINK_MS,0)}</stringProp>
+        </ConstantTimer>
+        <hashTree/>
         <!-- 1. 화면 -->
         <HTTPSamplerProxy guiclass="HttpTestSampleGui" testclass="HTTPSamplerProxy" testname="01 GET / (화면)" enabled="true">
           <elementProp name="HTTPsampler.Arguments" elementType="Arguments">

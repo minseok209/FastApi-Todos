@@ -14,9 +14,11 @@ pipeline {
     agent any
 
     parameters {
-        string(name: 'THREADS', defaultValue: '20', description: '동시 사용자 수 (JMeter 스레드)')
-        string(name: 'RAMP_UP', defaultValue: '10', description: '사용자를 모두 띄우는 데 걸리는 시간(초)')
-        string(name: 'LOOPS',   defaultValue: '30', description: '사용자 1명이 시나리오(요청 9개)를 반복하는 횟수')
+        // 기본값: 50명 × 20회 × 요청 9개 = 9,000건, 요청 사이 0.3초 → 약 1분 30초 동안 최대 50명이 동시에 접속
+        string(name: 'THREADS',  defaultValue: '50',  description: '동시 사용자 수 (JMeter 스레드)')
+        string(name: 'RAMP_UP',  defaultValue: '30',  description: '사용자를 모두 띄우는 데 걸리는 시간(초)')
+        string(name: 'LOOPS',    defaultValue: '20',  description: '사용자 1명이 시나리오(요청 9개)를 반복하는 횟수')
+        string(name: 'THINK_MS', defaultValue: '300', description: '요청 사이 생각 시간(ms) — 0 이면 요청이 너무 빨리 끝나 사용자들이 겹치지 않는다')
     }
 
     environment {
@@ -202,7 +204,7 @@ ENDSSH
                         "$JMETER_IMAGE_NAME:latest" \
                         jmeter -n -t test.jmx -l results.jtl -j jmeter.log \
                           -JTARGET_HOST="$REMOTE_HOST" -JTARGET_PORT="$HOST_PORT" \
-                          -JTHREADS="${THREADS:-20}" -JRAMP_UP="${RAMP_UP:-10}" -JLOOPS="${LOOPS:-30}" \
+                          -JTHREADS="${THREADS:-50}" -JRAMP_UP="${RAMP_UP:-30}" -JLOOPS="${LOOPS:-20}" -JTHINK_MS="${THINK_MS:-300}" \
                           -JAPP_NAME="jenkins-build-$BUILD_NUMBER" \
                           -Jjmeter.save.saveservice.output_format=csv \
                           -e -o report)
