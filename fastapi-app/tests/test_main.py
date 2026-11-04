@@ -1,3 +1,6 @@
+from concurrent.futures import ThreadPoolExecutor
+from datetime import date
+
 import pytest
 from fastapi.testclient import TestClient
 
@@ -269,7 +272,7 @@ def test_index_page():
     response = client.get("/")
     assert response.status_code == 200
     assert response.headers["content-type"].startswith("text/html")
-    assert "Version 6.0.0" in response.text
+    assert "Version 7.0.0" in response.text
     assert 'id="search"' in response.text        # 검색창이 화면에 있는지
     assert 'id="sort"' in response.text          # 정렬 선택이 화면에 있는지
 
@@ -371,3 +374,110 @@ def test_delete_completed_counts_in_metrics():
     before = deletes()
     client.delete("/todos/completed")
     assert deletes() - before == 2
+
+
+# ---------- 태그 / 마감일순 정렬 (v7.0.0) ----------
+
+def test_create_todo_with_tags():
+    response = client.post("/todos", json={"title": "보고서", "tags": [" 과제 ", "DevOps"]})
+    assert response.status_code == 201
+    assert response.json()["tags"] == ["과제", "DevOps"]          # 앞뒤 공백 제거
+    assert load_todos()[0].tags == ["과제", "DevOps"]
+
+
+def test_duplicate_tags_are_merged_ignoring_case():
+    response = client.post("/todos", json={"title": "A", "tags": ["DevOps", "devops", "과제", "DEVOPS"]})
+    assert response.json()["tags"] == ["DevOps", "과제"]           # 처음 입력한 표기를 남긴다
+
+
+@pytest.mark.parametrize("tags", [["a", "b", "c", "d", "e", "f"], [""], ["   "], ["x" * 21]])
+def test_invalid_tags_are_rejected(tags):
+    response = client.post("/todos", json={"title": "A", "tags": tags})
+    assert response.status_code == 422                             # 6개 이상 / 빈 태그 / 21자 이상
+    assert load_todos() == []
+
+
+def test_old_data_without_tags_has_empty_list():
+    main.TODO_FILE.write_text('[{"id": 1, "title": "예전 항목"}]', encoding="utf-8")   # v6 이전 형식
+    assert client.get("/todos").json()[0]["tags"] == []
+
+
+def test_filter_by_tag_ignores_case():
+    save_todos([make(1, "A", tags=["과제"]), make(2, "B", tags=["DevOps", "과제"]), make(3, "C")])
+    assert [t["id"] for t in client.get("/todos", params={"tag": "과제"}).json()] == [1, 2]
+    assert [t["id"] for t in client.get("/todos", params={"tag": " devops "}).json()] == [2]
+    assert client.get("/todos", params={"tag": "없는태그"}).json() == []
+
+
+def test_filter_by_tag_with_search_and_sort():
+    save_todos([
+        make(1, "과제 A", tags=["학교"], priority="low"),
+        make(2, "장보기", tags=["학교"], priority="high"),
+        make(3, "과제 B", tags=["학교"], priority="high"),
+        make(4, "과제 C", priority="high"),
+    ])
+    response = client.get("/todos", params={"q": "과제", "tag": "학교", "sort": "priority"})
+    assert [t["id"] for t in response.json()] == [3, 1]
+
+
+def test_tag_list_counts():
+    save_todos([make(1, "A", tags=["과제", "DevOps"]), make(2, "B", tags=["devops"]), make(3, "C", tags=["개인"]), make(4, "D")])
+    response = client.get("/todos/tags")
+    assert response.status_code == 200
+    assert response.json() == [                                    # 많이 쓴 순, 같으면 이름순
+        {"tag": "DevOps", "count": 2},
+        {"tag": "개인", "count": 1},
+        {"tag": "과제", "count": 1},
+    ]
+
+
+def test_tags_route_is_not_treated_as_todo_id():
+    assert client.get("/todos/tags").json() == []
+
+
+def test_update_tags():
+    save_todos([make(1, "A", tags=["old"])])
+    response = client.put("/todos/1", json={"title": "A", "tags": ["new"]})
+    assert response.json()["tags"] == ["new"]
+    assert client.get("/todos/tags").json() == [{"tag": "new", "count": 1}]
+
+
+def test_sort_by_due_date_puts_no_due_last():
+    save_todos([
+        make(1, "없음"),
+        make(2, "12월", due_date=date(2026, 12, 1)),
+        make(3, "11월", due_date=date(2026, 11, 10)),
+        make(4, "없음2"),
+        make(5, "10월", due_date=date(2026, 10, 1)),
+    ])
+    response = client.get("/todos", params={"sort": "due"})
+    assert response.status_code == 200
+    assert [t["id"] for t in response.json()] == [5, 3, 2, 1, 4]   # 마감일 빠른 순, 없는 항목은 등록순으로 맨 뒤
+
+
+# ---------- 동시 요청 (v7.0.0 결함 수정 — JMeter 부하 테스트에서 발견) ----------
+
+def test_concurrent_creates_get_unique_ids():
+    # 수정 전에는 60건 중 일부가 500(JSONDecodeError)으로 실패하고 같은 id·유실이 생겼다
+    concurrent_client = TestClient(app, raise_server_exceptions=False)
+    with ThreadPoolExecutor(max_workers=20) as pool:
+        codes = list(pool.map(lambda i: concurrent_client.post("/todos", json={"title": f"동시 {i}"}).status_code, range(60)))
+    assert codes == [201] * 60
+    ids = [t.id for t in load_todos()]
+    assert sorted(ids) == list(range(1, 61))                       # 유실·중복 없음
+
+
+def test_concurrent_reads_and_updates_never_fail():
+    save_todos([make(i, f"항목 {i}") for i in range(1, 11)])
+    concurrent_client = TestClient(app, raise_server_exceptions=False)
+
+    def work(i):
+        todo_id = i % 10 + 1
+        if i % 2:
+            return concurrent_client.put(f"/todos/{todo_id}", json={"title": f"수정 {i}", "completed": True}).status_code
+        return concurrent_client.get("/todos").status_code
+
+    with ThreadPoolExecutor(max_workers=20) as pool:
+        codes = list(pool.map(work, range(80)))
+    assert set(codes) == {200}
+    assert len(load_todos()) == 10

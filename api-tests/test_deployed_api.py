@@ -121,10 +121,10 @@ def test_invalid_priority_returns_422(api):
     assert response.status_code == 422
 
 
-def test_index_page_is_version_6(api):
+def test_index_page_is_version_7(api):
     response = api.get("/")
     assert response.status_code == 200
-    assert "Version 6.0.0" in response.text
+    assert "Version 7.0.0" in response.text
 
 
 def test_stats_follow_changes(api):                          # v6.0.0 현황 요약
@@ -154,3 +154,26 @@ def test_delete_completed_only_removes_done_items(api):     # v6.0.0 완료 항�
     assert response.json()["deleted"] >= 1
     left = ids(api.get("/todos", params={"q": f"{PREFIX} 일괄"}))
     assert done["id"] not in left and todo["id"] in left
+
+
+def test_tags_filter_and_list(api):                          # v7.0.0 태그
+    tag = f"t-{PREFIX[-8:]}"                                     # 이번 실행에서만 쓰는 태그 (20자 제한 안, 다른 데이터와 섞이지 않게)
+    first = api.post("/todos", json={"title": f"{PREFIX} 태그1", "tags": [tag, "공통"]}).json()
+    api.post("/todos", json={"title": f"{PREFIX} 태그 없음"})
+    assert first["tags"] == [tag, "공통"]
+    assert ids(api.get("/todos", params={"tag": tag.upper()})) == [first["id"]]   # 대소문자 무시
+    assert {"tag": tag, "count": 1} in api.get("/todos/tags").json()
+
+
+def test_too_many_tags_returns_422(api):
+    response = api.post("/todos", json={"title": f"{PREFIX} 태그 6개", "tags": list("abcdef")})
+    assert response.status_code == 422
+
+
+def test_sort_by_due_date(api):                              # v7.0.0 마감일순 정렬
+    late = api.post("/todos", json={"title": f"{PREFIX} 늦은 마감", "due_date": "2099-12-31"}).json()
+    none = api.post("/todos", json={"title": f"{PREFIX} 마감 없음"}).json()
+    early = api.post("/todos", json={"title": f"{PREFIX} 빠른 마감", "due_date": "2099-01-01"}).json()
+    response = api.get("/todos", params={"q": PREFIX, "sort": "due"})
+    order = [t["id"] for t in response.json() if t["id"] in (late["id"], none["id"], early["id"])]
+    assert order == [early["id"], late["id"], none["id"]]

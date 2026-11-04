@@ -22,6 +22,7 @@
             --mark: rgba(255, 204, 0, .35);
             --orange: #ff9500;
             --orange-bg: rgba(255, 149, 0, .12);
+            --blue-bg: rgba(0, 122, 255, .1);
         }
         @media (prefers-color-scheme: dark) {
             :root {
@@ -39,6 +40,7 @@
                 --mark: rgba(255, 214, 10, .3);
                 --orange: #ff9f0a;
                 --orange-bg: rgba(255, 159, 10, .18);
+                --blue-bg: rgba(10, 132, 255, .2);
             }
         }
 
@@ -144,6 +146,19 @@
         .badge.low { color: var(--secondary); background: var(--fill); }
         mark { background: var(--mark); color: inherit; border-radius: 3px; padding: 0 1px; }
 
+        /* 태그 (v7.0.0) */
+        .tags { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 4px; }
+        .tag {
+            border: 0; border-radius: 999px; padding: 1px 8px;
+            background: var(--blue-bg); color: var(--blue); font-size: 12px; font-weight: 600;
+        }
+        .tag:hover { filter: brightness(.95); }
+        #tag-filters { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
+        #tag-filters .tag { padding: 4px 10px; font-size: 13px; background: var(--fill); color: var(--label); font-weight: 500; }
+        #tag-filters .tag small { margin-left: 3px; color: var(--secondary); }
+        #tag-filters .tag[aria-pressed="true"] { background: var(--blue); color: #fff; }
+        #tag-filters .tag[aria-pressed="true"] small { color: rgba(255, 255, 255, .75); }
+
         input[type="checkbox"] {
             appearance: none; flex: none; width: 22px; height: 22px; margin: 12px 0 0;
             border: 1.5px solid var(--tertiary); border-radius: 50%; cursor: pointer;
@@ -201,6 +216,7 @@
     <form id="todo-form" class="card" aria-label="새로운 할 일">
         <input type="text" id="title" placeholder="제목 (예: 20231234)" maxlength="100" required>
         <input type="text" id="description" placeholder="설명 (예: 홍길동)">
+        <input type="text" id="tags" placeholder="태그 (쉼표로 구분, 예: 과제, DevOps)" aria-label="태그">
         <div class="row">
             <input type="date" id="due" aria-label="마감일">
             <select id="priority" aria-label="우선순위">
@@ -223,6 +239,7 @@
         <button type="button" data-filter="completed" aria-pressed="false">완료</button>
         <button type="button" data-filter="overdue" aria-pressed="false">기한 지남</button>
     </div>
+    <div id="tag-filters" role="group" aria-label="태그 필터" hidden></div>
 
     <div class="list-head">
         <p id="count" aria-live="polite"></p>
@@ -230,6 +247,7 @@
             <select id="sort" aria-label="정렬">
                 <option value="created">등록순</option>
                 <option value="priority">우선순위순</option>
+                <option value="due">마감일순</option>
             </select>
         </label>
     </div>
@@ -242,7 +260,7 @@
         <button type="button" id="clear-done" class="text-btn danger" hidden>완료 항목 삭제</button>
     </div>
 
-    <footer>Version 6.0.0</footer>
+    <footer>Version 7.0.0</footer>
 </main>
 
 <dialog id="edit-dialog" aria-labelledby="edit-heading">
@@ -255,6 +273,7 @@
         <div class="card">
             <input type="text" id="edit-title" aria-label="제목" maxlength="100" required>
             <input type="text" id="edit-description" aria-label="설명" placeholder="설명">
+            <input type="text" id="edit-tags" aria-label="태그" placeholder="태그 (쉼표로 구분)">
             <input type="date" id="edit-due" aria-label="마감일">
             <select id="edit-priority" aria-label="우선순위">
                 <option value="high">높음</option>
@@ -273,7 +292,9 @@
         let todos = [];                 // 서버에서 받아 둔 전체 목록
         let filter = "all";             // all | active | completed
         let query = "";                 // 제목 검색어 (소문자)
-        let sort = "created";           // created(등록순) | priority(우선순위순) — 정렬은 서버가 한다
+        let sort = "created";           // created(등록순) | priority(우선순위순) | due(마감일순) — 정렬은 서버가 한다
+        let tagFilter = "";             // 선택한 태그 (소문자, 빈 문자열이면 전체)
+        let tagCounts = [];             // 서버 /todos/tags — [{tag, count}]
         let editing = null;             // 편집 시트에서 수정 중인 항목
 
         // 모든 요청을 한 곳에서 처리하고, 실패는 조용히 넘기지 않는다
@@ -311,8 +332,12 @@
         }
 
         const load = () => run("목록 불러오기", async () => {
-          const [list, stats] = await Promise.all([api(`/todos?sort=${sort}`), api("/todos/stats")]);
+          const [list, stats, tags] = await Promise.all([api(`/todos?sort=${sort}`), api("/todos/stats"), api("/todos/tags")]);
           todos = list;
+          tagCounts = tags;
+          // 선택했던 태그가 더 이상 없으면 (마지막 항목 삭제 등) 태그 필터를 푼다
+          if (tagFilter && !tags.some((t) => t.tag.toLowerCase() === tagFilter)) tagFilter = "";
+          renderTagFilters();
           render();
           renderStats(stats);
         });
@@ -336,7 +361,32 @@
         };
 
         // 필터 + 검색어에 해당하는 항목만 고른다 (서버 데이터는 그대로 둔다)
-        const visible = () => todos.filter((todo) => FILTERS[filter](todo) && todo.title.toLowerCase().includes(query));
+        const hasTag = (todo) => !tagFilter || todo.tags.some((t) => t.toLowerCase() === tagFilter);
+        const visible = () => todos.filter((todo) => FILTERS[filter](todo) && hasTag(todo) && todo.title.toLowerCase().includes(query));
+
+        // "과제, DevOps ,, 과제" → ["과제", "DevOps"] (빈 값·중복 제거, 최대 5개는 서버가 검사)
+        function parseTags(text) {
+          const seen = new Set();
+          return text.split(",").map((t) => t.trim()).filter((t) => t && !seen.has(t.toLowerCase()) && seen.add(t.toLowerCase()));
+        }
+
+        // 태그를 누르면 그 태그만 보기, 다시 누르면 해제
+        function setTagFilter(tag) {
+          tagFilter = tagFilter === tag.toLowerCase() ? "" : tag.toLowerCase();
+          renderTagFilters();
+          render();
+        }
+
+        function renderTagFilters() {
+          const box = $("tag-filters");
+          box.hidden = tagCounts.length === 0;
+          box.replaceChildren(...tagCounts.map(({ tag, count }) => el("button", {
+            type: "button",
+            className: "tag",
+            onclick: () => setTagFilter(tag),
+            ariaPressed: String(tagFilter === tag.toLowerCase()),
+          }, `#${tag}`, el("small", { textContent: count }))));
+        }
 
         // 제목에서 검색어 부분을 <mark>로 강조 (textContent만 쓰므로 HTML 주입 걱정 없음)
         function highlight(title) {
@@ -367,9 +417,10 @@
 
         function render() {
           const shown = visible();
+          const tagLabel = tagFilter ? `#${tagCounts.find((t) => t.tag.toLowerCase() === tagFilter)?.tag ?? tagFilter} · ` : "";
           countEl.textContent = query
-            ? `검색 결과 ${shown.length}개 · 전체 ${todos.length}개`
-            : `${shown.length} / 전체 ${todos.length}개`;
+            ? `${tagLabel}검색 결과 ${shown.length}개 · 전체 ${todos.length}개`
+            : `${tagLabel}${shown.length} / 전체 ${todos.length}개`;
           emptyEl.textContent = query && shown.length === 0
             ? `‘${$("search").value.trim()}’에 대한 검색 결과가 없습니다.`
             : "표시할 To-Do가 없습니다.";
@@ -386,6 +437,10 @@
               el("span", { className: todo.completed ? "title done" : "title" }, ...highlight(todo.title)));
             if (todo.description) content.append(el("span", { className: "desc", textContent: todo.description }));
             if (todo.due_date) content.append(dueLabel(todo));
+            if (todo.tags.length) {
+              content.append(el("div", { className: "tags" }, ...todo.tags.map((tag) =>
+                el("button", { type: "button", className: "tag", textContent: `#${tag}`, onclick: () => setTagFilter(tag) }))));
+            }
             const body = el("div", { className: "body" },
               content, button("편집", () => edit(todo)), button("삭제", () => remove(todo.id), "text-btn danger"));
             return el("li", {}, check, body);
@@ -398,6 +453,7 @@
           $("edit-description").value = todo.description;
           $("edit-due").value = todo.due_date ?? "";
           $("edit-priority").value = todo.priority;
+          $("edit-tags").value = todo.tags.join(", ");
           dialog.showModal();
         }
 
@@ -410,6 +466,7 @@
             description: $("edit-description").value.trim(),
             due_date: $("edit-due").value || null,
             priority: $("edit-priority").value,
+            tags: parseTags($("edit-tags").value),
           });
         };
         $("edit-cancel").onclick = () => dialog.close();
@@ -431,6 +488,7 @@
               description: $("description").value.trim(),
               due_date: $("due").value || null,
               priority: $("priority").value,
+              tags: parseTags($("tags").value),
             });
             event.target.reset();
             submitBtn.disabled = true;

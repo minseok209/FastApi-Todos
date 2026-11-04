@@ -1,8 +1,9 @@
 import json
 import logging
+import threading
 from datetime import date
 from pathlib import Path
-from typing import Literal
+from typing import Annotated, Literal
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse
@@ -10,7 +11,7 @@ from prometheus_client import REGISTRY, Counter
 from prometheus_client.core import GaugeMetricFamily
 from prometheus_client.registry import Collector
 from prometheus_fastapi_instrumentator import Instrumentator
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, StringConstraints, field_validator
 
 BASE_DIR = Path(__file__).resolve().parent       # main.py 가 있는 폴더
 TODO_FILE = BASE_DIR / "todo.json"
@@ -20,6 +21,14 @@ if not TODO_FILE.exists():                       # 없으면 빈 목록으로 �
     TODO_FILE.write_text("[]", encoding="utf-8")
 
 app = FastAPI(title="To-Do List API")
+
+# todo.json 읽기·쓰기를 한 번에 하나씩만 (v7.0.0 결함 수정)
+# FastAPI 는 일반 def 엔드포인트를 스레드 풀에서 동시에 실행한다. JMeter 로 동시 요청을 보내자
+#   - 다른 요청이 쓰는 중인 파일을 읽어 JSONDecodeError → 500
+#   - 두 요청이 같은 목록을 읽고 각자 저장 → 같은 id 가 두 번 나오거나 방금 추가한 항목이 사라짐
+# 이 일어났다. RLock 이라 같은 스레드 안에서는 load_todos → save_todos 처럼 겹쳐 잡아도 된다.
+# (uvicorn 워커가 1개인 현재 구성 기준. 워커를 여러 개 띄우면 파일 잠금이나 DB 가 필요하다)
+TODO_LOCK = threading.RLock()
 logger = logging.getLogger("uvicorn.error")      # 변경 이력을 uvicorn 로그(docker logs)에 남긴다 (OWASP A09)
 
 # Prometheus 메트릭 엔드포인트(/metrics) — 요청 수·응답 시간 등을 자동으로 수집 (7주차)
@@ -46,6 +55,8 @@ INDEX_CSP = (
 )
 
 Priority = Literal["high", "medium", "low"]      # 우선순위: 높음 / 보통 / 낮음
+Tag = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=20)]   # 태그 1~20자 (v7.0.0)
+MAX_TAGS = 5
 PRIORITY_RANK = {"high": 0, "medium": 1, "low": 2}  # 우선순위순 정렬 기준 (작을수록 위)
 
 
@@ -55,10 +66,28 @@ class TodoIn(BaseModel):                         # 클라이언트가 보내는 
     completed: bool = False
     due_date: date | None = None                 # 마감일 (없으면 null) — 기존 데이터도 그대로 읽힌다
     priority: Priority = "medium"                # 우선순위 (없으면 보통) — 기존 데이터도 그대로 읽힌다
+    tags: list[Tag] = Field(default_factory=list, max_length=MAX_TAGS)   # 태그 최대 5개 (v7.0.0) — 없던 기존 데이터는 빈 목록
+
+    @field_validator("tags")
+    @classmethod
+    def dedupe_tags(cls, tags: list[str]) -> list[str]:
+        # 대소문자만 다른 같은 태그는 하나로 (처음 입력한 표기를 남긴다)
+        seen: set[str] = set()
+        unique = []
+        for tag in tags:
+            if tag.casefold() not in seen:
+                seen.add(tag.casefold())
+                unique.append(tag)
+        return unique
 
 
 class TodoItem(TodoIn):                          # 서버가 돌려주는 데이터 (id 있음)
     id: int
+
+
+class TagCount(BaseModel):                       # 태그별 개수 (v7.0.0)
+    tag: str
+    count: int
 
 
 class TodoStats(BaseModel):                      # 할 일 현황 요약 (v6.0.0)
@@ -71,14 +100,16 @@ class TodoStats(BaseModel):                      # 할 일 현황 요약 (v6.0.0
 
 
 def load_todos() -> list[TodoItem]:
-    raw = TODO_FILE.read_text(encoding="utf-8") if TODO_FILE.exists() else "[]"
+    with TODO_LOCK:                              # 다른 요청이 쓰는 중인 파일을 반쯤 읽지 않도록
+        raw = TODO_FILE.read_text(encoding="utf-8") if TODO_FILE.exists() else "[]"
     return [TodoItem(**t) for t in json.loads(raw)]
 
 
 def save_todos(todos: list[TodoItem]) -> None:
     # mode="json": date 를 "2026-09-30" 문자열로 바꿔야 json.dumps 가 저장할 수 있다
     data = json.dumps([t.model_dump(mode="json") for t in todos], indent=2, ensure_ascii=False)
-    TODO_FILE.write_text(data, encoding="utf-8")
+    with TODO_LOCK:
+        TODO_FILE.write_text(data, encoding="utf-8")
 
 
 def find_index(todos: list[TodoItem], todo_id: int) -> int:
@@ -126,14 +157,32 @@ async def add_security_headers(request: Request, call_next):
 
 
 @app.get("/todos")                               # 목록 조회 — ?q=검색어 로 제목 검색 (대소문자 무시)
-def get_todos(q: str = "", sort: Literal["created", "priority"] = "created") -> list[TodoItem]:
+def get_todos(q: str = "", tag: str = "", sort: Literal["created", "priority", "due"] = "created") -> list[TodoItem]:
     todos = load_todos()
     keyword = q.strip().casefold()
     if keyword:
         todos = [t for t in todos if keyword in t.title.casefold()]
+    wanted = tag.strip().casefold()
+    if wanted:                                   # ?tag=과제 — 그 태그가 붙은 항목만 (대소문자 무시, v7.0.0)
+        todos = [t for t in todos if wanted in (x.casefold() for x in t.tags)]
     if sort == "priority":                       # ?sort=priority — 높음 → 보통 → 낮음, 같으면 등록 순서 유지
         todos.sort(key=lambda t: PRIORITY_RANK[t.priority])
+    elif sort == "due":                          # ?sort=due — 마감일 빠른 순, 마감일 없는 항목은 맨 뒤 (v7.0.0)
+        todos.sort(key=lambda t: t.due_date or date.max)
     return todos
+
+
+@app.get("/todos/tags")                          # 태그 목록 — 많이 쓴 순, 같으면 이름순 (v7.0.0)
+def get_todo_tags() -> list[TagCount]:
+    counts: dict[str, int] = {}
+    names: dict[str, str] = {}                   # 대소문자 무시로 묶고, 처음 나온 표기로 보여준다
+    for todo in load_todos():
+        for tag in todo.tags:
+            key = tag.casefold()
+            names.setdefault(key, tag)
+            counts[key] = counts.get(key, 0) + 1
+    ranked = sorted(counts.items(), key=lambda kv: (-kv[1], kv[0]))
+    return [TagCount(tag=names[key], count=count) for key, count in ranked]
 
 
 @app.get("/todos/stats")                         # 현황 요약 — 전체·완료·미완료·기한 지남·완료율 (v6.0.0)
@@ -143,10 +192,11 @@ def get_todo_stats() -> TodoStats:
 
 @app.post("/todos", status_code=201)             # 추가 — id 는 서버가 매긴다
 def create_todo(payload: TodoIn) -> TodoItem:
-    todos = load_todos()
-    new_id = max((t.id for t in todos), default=0) + 1
-    todo = TodoItem(id=new_id, **payload.model_dump())
-    save_todos(todos + [todo])
+    with TODO_LOCK:                              # 읽기 → 새 id 계산 → 저장 사이에 다른 요청이 끼어들지 못하게
+        todos = load_todos()
+        new_id = max((t.id for t in todos), default=0) + 1
+        todo = TodoItem(id=new_id, **payload.model_dump())
+        save_todos(todos + [todo])
     TODO_CHANGES.labels("create").inc()
     logger.info("todo created: id=%s", todo.id)
     return todo
@@ -154,11 +204,13 @@ def create_todo(payload: TodoIn) -> TodoItem:
 
 @app.delete("/todos/completed")                  # 완료 항목 한꺼번에 삭제 (v6.0.0) — /todos/{todo_id} 보다 먼저 선언해야 한다
 def delete_completed_todos() -> dict[str, int]:
-    todos = load_todos()
-    remaining = [t for t in todos if not t.completed]
-    deleted = len(todos) - len(remaining)
+    with TODO_LOCK:
+        todos = load_todos()
+        remaining = [t for t in todos if not t.completed]
+        deleted = len(todos) - len(remaining)
+        if deleted:
+            save_todos(remaining)
     if deleted:
-        save_todos(remaining)
         TODO_CHANGES.labels("delete").inc(deleted)
         logger.info("completed todos deleted: count=%s", deleted)
     return {"deleted": deleted}
@@ -166,13 +218,14 @@ def delete_completed_todos() -> dict[str, int]:
 
 @app.put("/todos/{todo_id}", responses=NOT_FOUND_RESPONSE)                    # 수정
 def update_todo(todo_id: int, payload: TodoIn) -> TodoItem:
-    todos = load_todos()
-    index = find_index(todos, todo_id)
-    if index < 0:
-        raise HTTPException(404, NOT_FOUND_DETAIL)
-    todo = TodoItem(id=todo_id, **payload.model_dump())
-    todos[index] = todo
-    save_todos(todos)
+    with TODO_LOCK:
+        todos = load_todos()
+        index = find_index(todos, todo_id)
+        if index < 0:
+            raise HTTPException(404, NOT_FOUND_DETAIL)
+        todo = TodoItem(id=todo_id, **payload.model_dump())
+        todos[index] = todo
+        save_todos(todos)
     TODO_CHANGES.labels("update").inc()
     logger.info("todo updated: id=%s", todo_id)
     return todo
@@ -180,12 +233,13 @@ def update_todo(todo_id: int, payload: TodoIn) -> TodoItem:
 
 @app.delete("/todos/{todo_id}", status_code=204, responses=NOT_FOUND_RESPONSE)  # 삭제
 def delete_todo(todo_id: int) -> None:
-    todos = load_todos()
-    index = find_index(todos, todo_id)
-    if index < 0:
-        raise HTTPException(404, NOT_FOUND_DETAIL)
-    del todos[index]
-    save_todos(todos)
+    with TODO_LOCK:
+        todos = load_todos()
+        index = find_index(todos, todo_id)
+        if index < 0:
+            raise HTTPException(404, NOT_FOUND_DETAIL)
+        del todos[index]
+        save_todos(todos)
     TODO_CHANGES.labels("delete").inc()
     logger.info("todo deleted: id=%s", todo_id)
 
