@@ -260,7 +260,7 @@
         <button type="button" id="clear-done" class="text-btn danger" hidden>완료 항목 삭제</button>
     </div>
 
-    <footer>Version 7.0.0</footer>
+    <footer>Version 8.0.0</footer>
 </main>
 
 <dialog id="edit-dialog" aria-labelledby="edit-heading">
@@ -441,8 +441,10 @@
               content.append(el("div", { className: "tags" }, ...todo.tags.map((tag) =>
                 el("button", { type: "button", className: "tag", textContent: `#${tag}`, onclick: () => setTagFilter(tag) }))));
             }
-            const body = el("div", { className: "body" },
-              content, button("편집", () => edit(todo)), button("삭제", () => remove(todo.id), "text-btn danger"));
+            const body = el("div", { className: "body" }, content,
+              button("편집", () => edit(todo)),
+              button("복제", () => duplicate(todo)),
+              button("삭제", () => remove(todo.id), "text-btn danger"));
             return el("li", {}, check, body);
           }));
         }
@@ -470,6 +472,21 @@
           });
         };
         $("edit-cancel").onclick = () => dialog.close();
+
+        function duplicate(todo) {
+          const suffix = " (복사)";
+          const title = Array.from(todo.title).slice(0, 100 - suffix.length).join("") + suffix;
+          run("복제", async () => {
+            await api("/todos", "POST", {
+              title,
+              description: todo.description,
+              due_date: todo.due_date,
+              priority: todo.priority,
+              tags: todo.tags,
+            });
+            await load();
+          });
+        }
 
         function remove(id) {
           if (!confirm("정말 삭제할까요?")) return;

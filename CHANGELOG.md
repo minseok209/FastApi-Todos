@@ -2,6 +2,20 @@
 
 최신 버전을 위에 누적해서 기록한다.
 
+## Version 8.0.0
+
+### Added
+- 할 일 복제 — 목록에서 `복제`를 누르면 설명·마감일·우선순위·태그를 복사하고, 제목에 `(복사)`를 붙여 미완료 항목으로 등록한다.
+- FastAPI 요청별 액세스 로그를 표준 출력에 기록한다. 메서드, 경로, 상태 코드, 응답 시간으로 Loki에서 요청을 확인할 수 있다.
+- Docker Compose에 Alloy 로그 수집과 Loki 로그 저장을 추가했다. Grafana에 Loki 데이터 소스와 `Counting Requests Per Path` 대시보드를 자동 등록한다.
+
+### Changed
+- Grafana, Loki, Alloy 관리 포트를 루프백에 바인딩했다. Grafana와 Alloy UI는 SSH 포트 포워딩으로 접속한다.
+
+### Testing
+- 화면 버전 검증을 8.0.0으로 갱신하고, 완료된 항목을 복제했을 때 상세 정보가 복사되고 새 항목은 미완료가 되는 UI 테스트를 추가했다.
+- 로컬 단위 테스트 63개(`main.py` 커버리지 99%)와 API·브라우저 테스트 32개가 통과했다. Docker Compose와 Alloy 설정을 검증하고, Loki 3.7.9에서 실제 FastAPI 로그의 경로별 집계를 확인했다.
+
 ## Version 7.0.0
 
 ### Added

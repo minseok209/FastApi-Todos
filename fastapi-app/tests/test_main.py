@@ -212,7 +212,7 @@ def test_changes_are_logged(caplog):
         todo_id = client.post("/todos", json={"title": "Log"}).json()["id"]
         client.put(f"/todos/{todo_id}", json={"title": "Log2"})
         client.delete(f"/todos/{todo_id}")
-    assert [r.getMessage() for r in caplog.records] == [
+    assert [r.getMessage() for r in caplog.records if r.name == "uvicorn.error"] == [
         f"todo created: id={todo_id}", f"todo updated: id={todo_id}", f"todo deleted: id={todo_id}"]
 
 
@@ -272,7 +272,7 @@ def test_index_page():
     response = client.get("/")
     assert response.status_code == 200
     assert response.headers["content-type"].startswith("text/html")
-    assert "Version 7.0.0" in response.text
+    assert "Version 8.0.0" in response.text
     assert 'id="search"' in response.text        # 검색창이 화면에 있는지
     assert 'id="sort"' in response.text          # 정렬 선택이 화면에 있는지
 

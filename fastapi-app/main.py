@@ -1,9 +1,12 @@
 import json
 import logging
+import sys
 import threading
+import time
 from datetime import date
 from pathlib import Path
 from typing import Annotated, Literal
+from urllib.parse import quote
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse
@@ -30,6 +33,11 @@ app = FastAPI(title="To-Do List API")
 # (uvicorn 워커가 1개인 현재 구성 기준. 워커를 여러 개 띄우면 파일 잠금이나 DB 가 필요하다)
 TODO_LOCK = threading.RLock()
 logger = logging.getLogger("uvicorn.error")      # 변경 이력을 uvicorn 로그(docker logs)에 남긴다 (OWASP A09)
+access_logger = logging.getLogger("custom.access")
+access_logger.setLevel(logging.INFO)
+access_logger.addHandler(logging.StreamHandler(sys.stdout))
+access_logger.propagate = False
+logging.getLogger("uvicorn.access").disabled = True
 
 # Prometheus 메트릭 엔드포인트(/metrics) — 요청 수·응답 시간 등을 자동으로 수집 (7주차)
 Instrumentator().instrument(app).expose(app, endpoint="/metrics", include_in_schema=False)
@@ -154,6 +162,23 @@ async def add_security_headers(request: Request, call_next):
     response = await call_next(request)
     response.headers.update(SECURITY_HEADERS)
     return response
+
+
+@app.middleware("http")
+async def log_requests(request: Request, call_next):
+    started = time.perf_counter()
+    status = 500
+    try:
+        response = await call_next(request)
+        status = response.status_code
+        return response
+    finally:
+        client = request.client.host if request.client else "-"
+        path = quote(request.scope["path"])
+        version = request.scope["http_version"]
+        access_logger.info('%s - "%s %s HTTP/%s" %d %.3fs',
+                           client, request.method, path, version, status,
+                           time.perf_counter() - started)
 
 
 @app.get("/todos")                               # 목록 조회 — ?q=검색어 로 제목 검색 (대소문자 무시)

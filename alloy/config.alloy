@@ -1,0 +1,32 @@
+discovery.docker "fastapi" {
+  host = "unix:///var/run/docker.sock"
+
+  filter {
+    name   = "label"
+    values = ["com.docker.compose.service=fastapi-app"]
+  }
+}
+
+discovery.relabel "fastapi" {
+  targets = []
+
+  rule {
+    source_labels = ["__meta_docker_container_name"]
+    regex         = "/(.*)"
+    target_label  = "container"
+  }
+}
+
+loki.source.docker "fastapi" {
+  host          = "unix:///var/run/docker.sock"
+  targets       = discovery.docker.fastapi.targets
+  labels        = { "application" = "fastapi" }
+  relabel_rules = discovery.relabel.fastapi.rules
+  forward_to    = [loki.write.local.receiver]
+}
+
+loki.write "local" {
+  endpoint {
+    url = "http://loki:3100/loki/api/v1/push"
+  }
+}

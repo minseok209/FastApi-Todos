@@ -43,7 +43,7 @@ def item(page: Page, title):
 def test_initial_screen(todo_page: Page, shot):
     expect(todo_page).to_have_title("To-Do List")
     expect(todo_page.get_by_role("heading", level=1)).to_have_text("To-Do")
-    expect(todo_page.locator("footer")).to_have_text("Version 7.0.0")
+    expect(todo_page.locator("footer")).to_have_text("Version 8.0.0")
     expect(todo_page.locator("#priority")).to_have_value("medium")           # 우선순위 기본값 = 보통
     expect(todo_page.locator("#sort")).to_have_value("created")
     expect(todo_page.get_by_placeholder("제목 검색")).to_be_visible()
@@ -79,6 +79,34 @@ def test_add_button_disabled_without_title(todo_page: Page, shot):
     todo_page.fill("#title", f"{PREFIX} 제목")
     expect(todo_page.get_by_role("button", name="추가")).to_be_enabled()
     shot("버튼활성화")
+
+
+def test_duplicate_todo_preserves_details_and_resets_completion(todo_page: Page, shot):
+    title = f"{PREFIX} " + "가" * (99 - len(PREFIX))
+    original = todo_page.request.post("/todos", data={
+        "title": title,
+        "description": "매주 반복하는 작업",
+        "due_date": "2099-11-17",
+        "priority": "high",
+        "tags": ["과제"],
+        "completed": True,
+    }).json()
+    todo_page.reload()
+    item(todo_page, title).get_by_role("button", name="복제").click()
+
+    duplicate_title = title[:95] + " (복사)"
+    row = item(todo_page, duplicate_title)
+    expect(row).to_contain_text("매주 반복하는 작업")
+    expect(row).to_contain_text("2099-11-17")
+    expect(row).to_contain_text("높음")
+    expect(row.get_by_role("button", name="#과제")).to_be_visible()
+    expect(row.get_by_role("checkbox")).not_to_be_checked()
+    expect(item(todo_page, title).get_by_role("checkbox")).to_be_checked()
+
+    items = todo_page.request.get("/todos", params={"q": duplicate_title}).json()
+    assert len(items) == 1
+    assert items[0]["id"] != original["id"]
+    shot("할일복제")
 
 
 def test_overdue_label(todo_page: Page, shot):

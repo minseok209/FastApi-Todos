@@ -121,10 +121,10 @@ def test_invalid_priority_returns_422(api):
     assert response.status_code == 422
 
 
-def test_index_page_is_version_7(api):
+def test_index_page_is_version_8(api):
     response = api.get("/")
     assert response.status_code == 200
-    assert "Version 7.0.0" in response.text
+    assert "Version 8.0.0" in response.text
 
 
 def test_stats_follow_changes(api):                          # v6.0.0 현황 요약

@@ -1,0 +1,40 @@
+{
+  "uid": "fastapi-loki-requests",
+  "title": "Counting Requests Per Path",
+  "editable": true,
+  "schemaVersion": 40,
+  "tags": ["fastapi", "loki"],
+  "time": { "from": "now-15m", "to": "now" },
+  "refresh": "10s",
+  "panels": [
+    {
+      "id": 1,
+      "type": "timeseries",
+      "title": "Counting Requests Per Path",
+      "datasource": { "type": "loki", "uid": "loki" },
+      "gridPos": { "h": 12, "w": 24, "x": 0, "y": 0 },
+      "fieldConfig": {
+        "defaults": {
+          "decimals": 0,
+          "min": 0,
+          "custom": { "drawStyle": "bars", "fillOpacity": 65, "showPoints": "never" }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": { "showLegend": true, "displayMode": "list", "placement": "bottom" },
+        "tooltip": { "mode": "multi" }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "loki", "uid": "loki" },
+          "editorMode": "code",
+          "queryType": "range",
+          "expr": "sum by (path) (count_over_time({application=\"fastapi\"} | pattern `<_> - \"<method> <path> <_>\" <status> <_>` | path != \"\" [$__auto]))",
+          "legendFormat": "{{path}}"
+        }
+      ]
+    }
+  ]
+}
