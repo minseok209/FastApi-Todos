@@ -131,8 +131,11 @@ CREATE TABLE IF NOT EXISTS todos (
     tags        TEXT    NOT NULL DEFAULT '[]'
 )
 """
-TODO_FIELDS = "title, description, completed, due_date, priority, tags"
-SELECT_TODOS = f"SELECT id, {TODO_FIELDS} FROM todos"
+# SQL 은 모두 고정 문자열 + ? 자리표시자 — 값은 절대 문자열로 이어 붙이지 않는다 (SQL 인젝션 방지, SonarQube python:S2077)
+SELECT_TODOS = "SELECT id, title, description, completed, due_date, priority, tags FROM todos ORDER BY id"
+INSERT_TODO = "INSERT INTO todos (title, description, completed, due_date, priority, tags) VALUES (?, ?, ?, ?, ?, ?)"
+INSERT_TODO_WITH_ID = "INSERT INTO todos (id, title, description, completed, due_date, priority, tags) VALUES (?, ?, ?, ?, ?, ?, ?)"
+UPDATE_TODO = "UPDATE todos SET title = ?, description = ?, completed = ?, due_date = ?, priority = ?, tags = ? WHERE id = ?"
 
 
 def connect() -> sqlite3.Connection:
@@ -178,10 +181,7 @@ def row_to_todo(row: sqlite3.Row) -> TodoItem:
 
 
 def insert_todos(conn: sqlite3.Connection, todos: list[TodoItem]) -> None:
-    conn.executemany(
-        f"INSERT INTO todos (id, {TODO_FIELDS}) VALUES (?, ?, ?, ?, ?, ?, ?)",
-        [(t.id, *todo_values(t)) for t in todos],
-    )
+    conn.executemany(INSERT_TODO_WITH_ID, [(t.id, *todo_values(t)) for t in todos])
 
 
 def read_legacy_todos() -> list[TodoItem]:
@@ -208,7 +208,7 @@ def init_db() -> None:
 
 def load_todos() -> list[TodoItem]:
     with closing(connect()) as conn:
-        return [row_to_todo(row) for row in conn.execute(f"{SELECT_TODOS} ORDER BY id")]
+        return [row_to_todo(row) for row in conn.execute(SELECT_TODOS)]
 
 
 def save_todos(todos: list[TodoItem]) -> None:
@@ -321,7 +321,7 @@ def get_todo_stats() -> TodoStats:
 @app.post("/todos", status_code=201)             # 추가 — id 는 DB 가 매긴다 (가장 큰 id + 1)
 def create_todo(payload: TodoIn) -> TodoItem:
     with closing(connect()) as conn:             # INSERT 한 문장이라 동시 요청에도 id 가 겹치지 않는다
-        cursor = conn.execute(f"INSERT INTO todos ({TODO_FIELDS}) VALUES (?, ?, ?, ?, ?, ?)", todo_values(payload))
+        cursor = conn.execute(INSERT_TODO, todo_values(payload))
     todo = TodoItem(id=cursor.lastrowid, **payload.model_dump())
     TODO_CHANGES.labels("create").inc()
     logger.info("todo created: id=%s", todo.id)
@@ -341,10 +341,7 @@ def delete_completed_todos() -> dict[str, int]:
 @app.put("/todos/{todo_id}", responses=NOT_FOUND_RESPONSE)                    # 수정
 def update_todo(todo_id: int, payload: TodoIn) -> TodoItem:
     with closing(connect()) as conn:
-        cursor = conn.execute(
-            "UPDATE todos SET title = ?, description = ?, completed = ?, due_date = ?, priority = ?, tags = ? WHERE id = ?",
-            (*todo_values(payload), todo_id),
-        )
+        cursor = conn.execute(UPDATE_TODO, (*todo_values(payload), todo_id))
     if cursor.rowcount == 0:                     # 바뀐 행이 없으면 없는 id — 404 는 엔드포인트가 직접 던진다 (SonarQube python:S8415)
         raise HTTPException(404, NOT_FOUND_DETAIL)
     TODO_CHANGES.labels("update").inc()
