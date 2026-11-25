@@ -152,6 +152,7 @@ docker run -d --name "$CONTAINER_NAME" \
   --security-opt no-new-privileges:true \
   --cap-drop ALL \
   -p "$HOST_PORT:$CONTAINER_PORT" \
+  -v "${CONTAINER_NAME}-data:/app/data" \
   "$IMAGE"
 docker ps --filter "name=$CONTAINER_NAME"
 ENDSSH

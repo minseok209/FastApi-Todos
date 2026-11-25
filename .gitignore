@@ -16,3 +16,6 @@ jmeter/report/
 jmeter/results.jtl
 jmeter/jmeter.log
 .env
+
+# 로컬 실행 시 생기는 SQLite DB (fastapi-app/data/todo.db)
+fastapi-app/data/

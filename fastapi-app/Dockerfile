@@ -21,8 +21,12 @@ RUN pip install -r requirements.txt
 # `COPY . .` 처럼 폴더 전체를 복사하면 .env·키 파일 등이 실수로 이미지에 들어갈 수 있다
 COPY main.py ./
 COPY templates/index.html ./templates/
-# 데이터 파일만 appuser 소유로 → 앱은 todo.json 만 수정할 수 있다
-COPY --chown=appuser:appuser todo.json ./
+# 예전 데이터 파일 — DB 를 처음 만들 때 읽기만 하므로 root 소유 그대로 둔다
+COPY todo.json ./
+# SQLite DB 폴더만 appuser 소유로 → 앱은 /app/data 안에만 쓸 수 있다
+# (DB 파일 옆에 -wal·-shm 파일도 생기므로 파일이 아닌 폴더 단위로 권한을 준다)
+# 이 폴더에 볼륨을 붙이면(docker run -v ...:/app/data) 재배포해도 할 일이 남는다
+RUN mkdir /app/data && chown appuser:appuser /app/data
 
 # 이후 명령은 appuser 권한으로 실행
 USER appuser

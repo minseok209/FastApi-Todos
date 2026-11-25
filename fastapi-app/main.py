@@ -1,8 +1,10 @@
 import json
 import logging
+import os
+import sqlite3
 import sys
-import threading
 import time
+from contextlib import asynccontextmanager, closing, contextmanager
 from datetime import date
 from pathlib import Path
 from typing import Annotated, Literal
@@ -17,21 +19,28 @@ from prometheus_fastapi_instrumentator import Instrumentator
 from pydantic import BaseModel, Field, StringConstraints, field_validator
 
 BASE_DIR = Path(__file__).resolve().parent       # main.py 가 있는 폴더
-TODO_FILE = BASE_DIR / "todo.json"
+# 할 일은 SQLite DB 에 저장한다 (이전에는 todo.json 파일 하나에 목록 전체를 다시 썼다)
+#   - 기본 위치: fastapi-app/data/todo.db, 환경 변수 TODO_DB 로 바꿀 수 있다
+#   - 컨테이너에서는 /app/data 를 볼륨으로 붙여 재배포해도 데이터가 남는다
+DB_FILE = Path(os.environ.get("TODO_DB", BASE_DIR / "data" / "todo.db"))
+LEGACY_TODO_FILE = BASE_DIR / "todo.json"        # 예전 저장 파일 — DB 를 처음 만들 때 한 번만 가져온다
 INDEX_FILE = BASE_DIR / "templates" / "index.html"
 
-if not TODO_FILE.exists():                       # 없으면 빈 목록으로 만들어 둔다
-    TODO_FILE.write_text("[]", encoding="utf-8")
 
-app = FastAPI(title="To-Do List API")
+@asynccontextmanager
+async def lifespan(_app: FastAPI):
+    init_db()                                    # 서버가 뜰 때 DB·테이블 준비 (처음이면 todo.json 가져오기)
+    yield
 
-# todo.json 읽기·쓰기를 한 번에 하나씩만 (v7.0.0 결함 수정)
-# FastAPI 는 일반 def 엔드포인트를 스레드 풀에서 동시에 실행한다. JMeter 로 동시 요청을 보내자
-#   - 다른 요청이 쓰는 중인 파일을 읽어 JSONDecodeError → 500
-#   - 두 요청이 같은 목록을 읽고 각자 저장 → 같은 id 가 두 번 나오거나 방금 추가한 항목이 사라짐
-# 이 일어났다. RLock 이라 같은 스레드 안에서는 load_todos → save_todos 처럼 겹쳐 잡아도 된다.
-# (uvicorn 워커가 1개인 현재 구성 기준. 워커를 여러 개 띄우면 파일 잠금이나 DB 가 필요하다)
-TODO_LOCK = threading.RLock()
+
+app = FastAPI(title="To-Do List API", lifespan=lifespan)
+
+# 동시 요청 처리 (v7.0.0 결함 → DB 전환으로 해결)
+# FastAPI 는 일반 def 엔드포인트를 스레드 풀에서 동시에 실행한다. 파일 저장 방식에서는 잠금(RLock)으로 막았지만
+# 프로세스 하나 안에서만 통했다. 이제는 SQLite 트랜잭션이 직렬화를 맡는다 —
+#   - 요청마다 연결을 새로 열고, 추가·수정·삭제는 SQL 한 문장(원자적)으로 처리
+#   - WAL 모드: 쓰는 중에도 읽기가 막히지 않는다 / busy timeout: 다른 쓰기가 끝날 때까지 기다린다
+DB_TIMEOUT_SECONDS = 30
 logger = logging.getLogger("uvicorn.error")      # 변경 이력을 uvicorn 로그(docker logs)에 남긴다 (OWASP A09)
 access_logger = logging.getLogger("custom.access")
 access_logger.setLevel(logging.INFO)
@@ -107,25 +116,106 @@ class TodoStats(BaseModel):                      # 할 일 현황 요약 (v6.0.0
     active_by_priority: dict[str, int]           # 남은 할 일의 우선순위별 개수
 
 
+# ---------- DB (SQLite) ----------
+
+# id 는 INTEGER PRIMARY KEY — 값을 주지 않으면 SQLite 가 "가장 큰 id + 1" 을 매긴다 (파일 방식과 같은 규칙)
+# tags 는 목록이라 JSON 문자열로, due_date 는 "2026-10-06" 문자열로 저장한다
+CREATE_TODOS_TABLE = """
+CREATE TABLE IF NOT EXISTS todos (
+    id          INTEGER PRIMARY KEY,
+    title       TEXT    NOT NULL,
+    description TEXT    NOT NULL DEFAULT '',
+    completed   INTEGER NOT NULL DEFAULT 0 CHECK (completed IN (0, 1)),
+    due_date    TEXT,
+    priority    TEXT    NOT NULL DEFAULT 'medium' CHECK (priority IN ('high', 'medium', 'low')),
+    tags        TEXT    NOT NULL DEFAULT '[]'
+)
+"""
+TODO_FIELDS = "title, description, completed, due_date, priority, tags"
+SELECT_TODOS = f"SELECT id, {TODO_FIELDS} FROM todos"
+
+
+def connect() -> sqlite3.Connection:
+    # isolation_level=None: 문장마다 바로 커밋(autocommit). 여러 문장을 묶을 때만 transaction() 을 쓴다
+    conn = sqlite3.connect(DB_FILE, timeout=DB_TIMEOUT_SECONDS, isolation_level=None)
+    conn.row_factory = sqlite3.Row
+    return conn
+
+
+@contextmanager
+def transaction(conn: sqlite3.Connection):
+    """BEGIN IMMEDIATE ~ COMMIT — 시작하자마자 쓰기 잠금을 잡아 중간에 다른 쓰기가 끼어들지 못하게 한다. 오류면 ROLLBACK."""
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        yield conn
+    except BaseException:
+        conn.execute("ROLLBACK")
+        raise
+    conn.execute("COMMIT")
+
+
+def todo_values(todo: TodoIn) -> tuple:
+    return (
+        todo.title,
+        todo.description,
+        int(todo.completed),
+        todo.due_date.isoformat() if todo.due_date else None,
+        todo.priority,
+        json.dumps(todo.tags, ensure_ascii=False),
+    )
+
+
+def row_to_todo(row: sqlite3.Row) -> TodoItem:
+    return TodoItem(
+        id=row["id"],
+        title=row["title"],
+        description=row["description"],
+        completed=bool(row["completed"]),
+        due_date=row["due_date"],
+        priority=row["priority"],
+        tags=json.loads(row["tags"]),
+    )
+
+
+def insert_todos(conn: sqlite3.Connection, todos: list[TodoItem]) -> None:
+    conn.executemany(
+        f"INSERT INTO todos (id, {TODO_FIELDS}) VALUES (?, ?, ?, ?, ?, ?, ?)",
+        [(t.id, *todo_values(t)) for t in todos],
+    )
+
+
+def read_legacy_todos() -> list[TodoItem]:
+    # 예전 todo.json — priority·tags 가 없던 오래된 형식도 기본값(보통·빈 목록)으로 읽힌다
+    if not LEGACY_TODO_FILE.exists():
+        return []
+    return [TodoItem(**t) for t in json.loads(LEGACY_TODO_FILE.read_text(encoding="utf-8"))]
+
+
+def init_db() -> None:
+    """테이블이 없으면 만들고, 그때 한 번만 todo.json 의 기존 데이터를 옮겨 온다."""
+    DB_FILE.parent.mkdir(parents=True, exist_ok=True)
+    with closing(connect()) as conn:
+        conn.execute("PRAGMA journal_mode=WAL")   # DB 파일에 저장되는 설정 — 한 번만 하면 된다
+        with transaction(conn):
+            exists = conn.execute("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'todos'").fetchone()
+            if exists:
+                return
+            conn.execute(CREATE_TODOS_TABLE)
+            legacy = read_legacy_todos()
+            insert_todos(conn, legacy)
+    logger.info("todo database created: %s (imported %s items from todo.json)", DB_FILE, len(legacy))
+
+
 def load_todos() -> list[TodoItem]:
-    with TODO_LOCK:                              # 다른 요청이 쓰는 중인 파일을 반쯤 읽지 않도록
-        raw = TODO_FILE.read_text(encoding="utf-8") if TODO_FILE.exists() else "[]"
-    return [TodoItem(**t) for t in json.loads(raw)]
+    with closing(connect()) as conn:
+        return [row_to_todo(row) for row in conn.execute(f"{SELECT_TODOS} ORDER BY id")]
 
 
 def save_todos(todos: list[TodoItem]) -> None:
-    # mode="json": date 를 "2026-09-30" 문자열로 바꿔야 json.dumps 가 저장할 수 있다
-    data = json.dumps([t.model_dump(mode="json") for t in todos], indent=2, ensure_ascii=False)
-    with TODO_LOCK:
-        TODO_FILE.write_text(data, encoding="utf-8")
-
-
-def find_index(todos: list[TodoItem], todo_id: int) -> int:
-    # 없으면 404 — 예외는 엔드포인트가 직접 던지고 responses 에 문서화한다 (SonarQube python:S8415)
-    for i, todo in enumerate(todos):
-        if todo.id == todo_id:
-            return i
-    return -1
+    """목록 전체를 이 내용으로 바꾼다 (테스트 데이터 준비용 — API 는 한 건씩 SQL 로 처리)."""
+    with closing(connect()) as conn, transaction(conn):
+        conn.execute("DELETE FROM todos")
+        insert_todos(conn, todos)
 
 
 def todo_stats(todos: list[TodoItem]) -> TodoStats:
@@ -143,15 +233,28 @@ def todo_stats(todos: list[TodoItem]) -> TodoStats:
 
 
 class TodoCollector(Collector):
-    """Prometheus 가 /metrics 를 읽을 때마다 todo.json 에서 현재 할 일 현황을 계산해 내보낸다."""
+    """Prometheus 가 /metrics 를 읽을 때마다 DB 에서 현재 할 일 현황을 계산해 내보낸다."""
+
+    @staticmethod
+    def items_family() -> GaugeMetricFamily:
+        return GaugeMetricFamily("todo_items", "Current number of To-Do items by status", labels=["status"])
+
+    @staticmethod
+    def rate_family(value: float | None = None) -> GaugeMetricFamily:
+        return GaugeMetricFamily("todo_completion_rate_percent", "Completed To-Do items (%)", value=value)
+
+    def describe(self):
+        # REGISTRY.register() 는 메트릭 이름 확인을 위해 import 시점에 호출한다.
+        # describe 가 없으면 collect 를 대신 불러 DB 를 읽으려 하는데, 그때는 아직 DB 가 준비되기 전이다
+        return [self.items_family(), self.rate_family()]
 
     def collect(self):
         stats = todo_stats(load_todos())
-        items = GaugeMetricFamily("todo_items", "Current number of To-Do items by status", labels=["status"])
+        items = self.items_family()
         for status in ("completed", "active", "overdue"):
             items.add_metric([status], getattr(stats, status))
         yield items
-        yield GaugeMetricFamily("todo_completion_rate_percent", "Completed To-Do items (%)", value=stats.completion_rate)
+        yield self.rate_family(stats.completion_rate)
 
 
 REGISTRY.register(TodoCollector())
@@ -215,13 +318,11 @@ def get_todo_stats() -> TodoStats:
     return todo_stats(load_todos())
 
 
-@app.post("/todos", status_code=201)             # 추가 — id 는 서버가 매긴다
+@app.post("/todos", status_code=201)             # 추가 — id 는 DB 가 매긴다 (가장 큰 id + 1)
 def create_todo(payload: TodoIn) -> TodoItem:
-    with TODO_LOCK:                              # 읽기 → 새 id 계산 → 저장 사이에 다른 요청이 끼어들지 못하게
-        todos = load_todos()
-        new_id = max((t.id for t in todos), default=0) + 1
-        todo = TodoItem(id=new_id, **payload.model_dump())
-        save_todos(todos + [todo])
+    with closing(connect()) as conn:             # INSERT 한 문장이라 동시 요청에도 id 가 겹치지 않는다
+        cursor = conn.execute(f"INSERT INTO todos ({TODO_FIELDS}) VALUES (?, ?, ?, ?, ?, ?)", todo_values(payload))
+    todo = TodoItem(id=cursor.lastrowid, **payload.model_dump())
     TODO_CHANGES.labels("create").inc()
     logger.info("todo created: id=%s", todo.id)
     return todo
@@ -229,12 +330,8 @@ def create_todo(payload: TodoIn) -> TodoItem:
 
 @app.delete("/todos/completed")                  # 완료 항목 한꺼번에 삭제 (v6.0.0) — /todos/{todo_id} 보다 먼저 선언해야 한다
 def delete_completed_todos() -> dict[str, int]:
-    with TODO_LOCK:
-        todos = load_todos()
-        remaining = [t for t in todos if not t.completed]
-        deleted = len(todos) - len(remaining)
-        if deleted:
-            save_todos(remaining)
+    with closing(connect()) as conn:
+        deleted = conn.execute("DELETE FROM todos WHERE completed = 1").rowcount
     if deleted:
         TODO_CHANGES.labels("delete").inc(deleted)
         logger.info("completed todos deleted: count=%s", deleted)
@@ -243,28 +340,24 @@ def delete_completed_todos() -> dict[str, int]:
 
 @app.put("/todos/{todo_id}", responses=NOT_FOUND_RESPONSE)                    # 수정
 def update_todo(todo_id: int, payload: TodoIn) -> TodoItem:
-    with TODO_LOCK:
-        todos = load_todos()
-        index = find_index(todos, todo_id)
-        if index < 0:
-            raise HTTPException(404, NOT_FOUND_DETAIL)
-        todo = TodoItem(id=todo_id, **payload.model_dump())
-        todos[index] = todo
-        save_todos(todos)
+    with closing(connect()) as conn:
+        cursor = conn.execute(
+            "UPDATE todos SET title = ?, description = ?, completed = ?, due_date = ?, priority = ?, tags = ? WHERE id = ?",
+            (*todo_values(payload), todo_id),
+        )
+    if cursor.rowcount == 0:                     # 바뀐 행이 없으면 없는 id — 404 는 엔드포인트가 직접 던진다 (SonarQube python:S8415)
+        raise HTTPException(404, NOT_FOUND_DETAIL)
     TODO_CHANGES.labels("update").inc()
     logger.info("todo updated: id=%s", todo_id)
-    return todo
+    return TodoItem(id=todo_id, **payload.model_dump())
 
 
 @app.delete("/todos/{todo_id}", status_code=204, responses=NOT_FOUND_RESPONSE)  # 삭제
 def delete_todo(todo_id: int) -> None:
-    with TODO_LOCK:
-        todos = load_todos()
-        index = find_index(todos, todo_id)
-        if index < 0:
-            raise HTTPException(404, NOT_FOUND_DETAIL)
-        del todos[index]
-        save_todos(todos)
+    with closing(connect()) as conn:
+        deleted = conn.execute("DELETE FROM todos WHERE id = ?", (todo_id,)).rowcount
+    if deleted == 0:
+        raise HTTPException(404, NOT_FOUND_DETAIL)
     TODO_CHANGES.labels("delete").inc()
     logger.info("todo deleted: id=%s", todo_id)
 

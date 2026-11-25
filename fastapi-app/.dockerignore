@@ -17,3 +17,7 @@ pytest_report/
 sonar-project.properties
 coverage.xml
 .scannerwork/
+data/
+*.db
+*.db-wal
+*.db-shm

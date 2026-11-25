@@ -2,6 +2,20 @@
 
 최신 버전을 위에 누적해서 기록한다.
 
+## Unreleased
+
+### Changed
+- **저장소를 `todo.json` 파일에서 SQLite DB(`/app/data/todo.db`)로 변경** — 요청마다 목록 전체를 읽고 다시 쓰던 방식 대신,
+  추가·수정·삭제를 SQL 한 문장(`INSERT`/`UPDATE`/`DELETE`)으로 처리한다. 동시 요청은 프로세스 안 잠금(`threading.RLock`) 대신
+  SQLite 트랜잭션·WAL 모드가 직렬화하므로 uvicorn 워커를 여러 개 띄워도 데이터가 깨지지 않는다.
+- API 응답 형식·id 규칙(가장 큰 id + 1)은 그대로다. DB 경로는 환경 변수 `TODO_DB` 로 바꿀 수 있다.
+- DB 를 처음 만들 때 기존 `todo.json` 내용을 한 번만 가져온다 (priority·tags 가 없는 예전 형식도 기본값으로 변환).
+- Docker: `/app/data` 폴더만 `appuser` 쓰기 가능, `todo.json` 은 읽기 전용(root 소유). Docker Compose(`todo-data`)와
+  Jenkins 배포(`<컨테이너 이름>-data`)에 볼륨을 붙여 재배포해도 할 일이 남는다.
+
+### Testing
+- 단위 테스트를 임시 DB 기준으로 바꾸고 `todo.json` 가져오기·재시작 시 중복 가져오기 없음·서버 시작 시 DB 생성·쓰기 실패 시 ROLLBACK 테스트 추가 — 67개 통과, `main.py` 커버리지 100%.
+
 ## Version 8.0.0
 
 ### Added

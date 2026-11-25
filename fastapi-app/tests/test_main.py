@@ -1,3 +1,4 @@
+import sqlite3
 from concurrent.futures import ThreadPoolExecutor
 from datetime import date
 
@@ -11,11 +12,19 @@ client = TestClient(app)
 
 
 @pytest.fixture(autouse=True)
-def use_temp_todo_file(tmp_path, monkeypatch):
-    # 실제 todo.json 대신 테스트마다 새 임시 파일 사용 (본인 데이터 보호 + 테스트 간 격리)
+def use_temp_db(tmp_path, monkeypatch):
+    # 실제 DB 대신 테스트마다 새 임시 DB 사용 (본인 데이터 보호 + 테스트 간 격리)
     # 정리할 것이 없으므로 yield 없이 끝낸다 — tmp_path 와 monkeypatch 가 자동으로 원상 복구 (SonarQube python:S9100)
-    monkeypatch.setattr(main, "TODO_FILE", tmp_path / "todo.json")
-    save_todos([])  # 테스트 전 초기화
+    monkeypatch.setattr(main, "DB_FILE", tmp_path / "todo.db")
+    monkeypatch.setattr(main, "LEGACY_TODO_FILE", tmp_path / "todo.json")   # 없는 파일 → 가져올 데이터 없음
+    main.init_db()
+
+
+def use_legacy_file(text):
+    # 예전 todo.json 이 있는 상태에서 DB 를 처음 만드는 상황
+    main.DB_FILE.unlink()
+    main.LEGACY_TODO_FILE.write_text(text, encoding="utf-8")
+    main.init_db()
 
 
 def make(todo_id, title, completed=False, **extra):
@@ -38,12 +47,40 @@ def test_get_todos_with_items():
     assert response.json()[0]["title"] == "Test"
 
 
-def test_get_todos_when_file_missing():
-    main.TODO_FILE.unlink()                      # 파일이 지워져도 빈 목록으로 동작
-    response = client.get("/todos")
-    assert response.status_code == 200
-    assert response.json() == []
+# ---------- DB 초기화·todo.json 가져오기 ----------
 
+def test_init_db_imports_legacy_json_once():
+    use_legacy_file('[{"id": 3, "title": "예전 항목", "completed": true}]')
+    assert [(t["id"], t["title"], t["completed"]) for t in client.get("/todos").json()] == [(3, "예전 항목", True)]
+    client.delete("/todos/3")
+    main.init_db()                               # 서버를 다시 띄워도 지운 항목이 되살아나지 않는다
+    assert client.get("/todos").json() == []
+
+
+def test_init_db_without_legacy_file_is_empty():
+    main.DB_FILE.unlink()
+    main.init_db()
+    assert client.get("/todos").json() == []
+
+
+def test_created_id_continues_after_legacy_import():
+    use_legacy_file('[{"id": 7, "title": "예전 항목"}]')
+    assert client.post("/todos", json={"title": "새 항목"}).json()["id"] == 8
+
+
+def test_app_startup_creates_database(tmp_path, monkeypatch):
+    monkeypatch.setattr(main, "DB_FILE", tmp_path / "new" / "todo.db")   # 폴더가 없어도 만든다
+    with TestClient(app) as started:             # with → lifespan(서버 시작) 실행
+        assert started.get("/todos").json() == []
+    assert main.DB_FILE.exists()
+
+
+
+def test_failed_write_rolls_back():
+    save_todos([make(1, "원본")])
+    with pytest.raises(sqlite3.IntegrityError):  # 같은 id 두 개 → 중간에 실패
+        save_todos([make(2, "A"), make(2, "B")])
+    assert [t.title for t in load_todos()] == ["원본"]   # 지우기까지 되돌려져 원래 데이터 유지
 
 # ---------- 검색 (v4.0.0) ----------
 
@@ -93,7 +130,7 @@ def test_create_todo():
     assert response.status_code == 201           # 생성 성공 = 201 Created
     assert response.json()["title"] == "Test"
     assert response.json()["id"] == 1            # id 는 서버가 부여
-    assert len(load_todos()) == 1                # 파일에도 저장됐는지 확인
+    assert len(load_todos()) == 1                # DB 에도 저장됐는지 확인
 
 
 def test_create_todo_assigns_next_id():
@@ -152,7 +189,7 @@ def test_create_todo_invalid_priority():
 
 
 def test_old_data_without_priority_is_medium():
-    main.TODO_FILE.write_text('[{"id": 1, "title": "예전 항목"}]', encoding="utf-8")   # v4 이전 형식
+    use_legacy_file('[{"id": 1, "title": "예전 항목"}]')   # v4 이전 형식
     assert client.get("/todos").json()[0]["priority"] == "medium"
 
 
@@ -398,7 +435,7 @@ def test_invalid_tags_are_rejected(tags):
 
 
 def test_old_data_without_tags_has_empty_list():
-    main.TODO_FILE.write_text('[{"id": 1, "title": "예전 항목"}]', encoding="utf-8")   # v6 이전 형식
+    use_legacy_file('[{"id": 1, "title": "예전 항목"}]')   # v6 이전 형식
     assert client.get("/todos").json()[0]["tags"] == []
 
 
