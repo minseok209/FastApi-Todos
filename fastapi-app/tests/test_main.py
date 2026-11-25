@@ -78,8 +78,9 @@ def test_app_startup_creates_database(tmp_path, monkeypatch):
 
 def test_failed_write_rolls_back():
     save_todos([make(1, "원본")])
-    with pytest.raises(sqlite3.IntegrityError):  # 같은 id 두 개 → 중간에 실패
-        save_todos([make(2, "A"), make(2, "B")])
+    duplicate_ids = [make(2, "A"), make(2, "B")]  # 같은 id 두 개 → 저장 중간에 실패
+    with pytest.raises(sqlite3.IntegrityError):  # 블록 안에는 예외가 날 수 있는 호출 하나만 (SonarQube python:S5778)
+        save_todos(duplicate_ids)
     assert [t.title for t in load_todos()] == ["원본"]   # 지우기까지 되돌려져 원래 데이터 유지
 
 # ---------- 검색 (v4.0.0) ----------
